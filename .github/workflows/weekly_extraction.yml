@@ -1,0 +1,82 @@
+name: Extração semanal NFL 2026
+
+on:
+  schedule:
+    # Toda terça-feira às 09:00 UTC (06:00 em Brasília) — depois de Segunda
+    # à Noite (Monday Night Football), garante que a rodada da semana já
+    # foi disputada por completo.
+    - cron: "0 9 * * 2"
+  workflow_dispatch:
+    # permite rodar manualmente pelo botão "Run workflow" na aba Actions,
+    # útil para testar sem esperar o cron
+
+env:
+  SEASON_YEAR: "2026"
+
+jobs:
+  extract-and-load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Baixar o código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: 1. Extrair roster (32 times)
+        working-directory: sources
+        run: python extract_players_roster.py --output players_roster.csv
+
+      - name: 2. Extrair categorias de líderes
+        working-directory: sources
+        run: python extract_category_stats.py --year ${{ env.SEASON_YEAR }} --output-dir stats_${{ env.SEASON_YEAR }}
+
+      - name: 3. Extrair jogos (via QBs)
+        working-directory: sources
+        run: python extract_qb_games.py --roster players_roster.csv --year ${{ env.SEASON_YEAR }} --output games_${{ env.SEASON_YEAR }}.csv
+
+      - name: 4. Extrair extra points (kickers)
+        working-directory: sources
+        run: python extract_extra_points.py --roster players_roster.csv --year ${{ env.SEASON_YEAR }} --output extra_points_${{ env.SEASON_YEAR }}.csv
+
+      - name: 5. Extrair defense (tackles/sacks)
+        working-directory: sources
+        run: python extract_defense_stats.py --roster players_roster.csv --year ${{ env.SEASON_YEAR }} --output defense_${{ env.SEASON_YEAR }}.csv
+
+      - name: 6. Transformar dados (junta tudo no formato do banco)
+        working-directory: sources
+        run: |
+          python transform_stats.py --year ${{ env.SEASON_YEAR }} \
+            --roster players_roster.csv \
+            --stats-dir stats_${{ env.SEASON_YEAR }} \
+            --games games_${{ env.SEASON_YEAR }}.csv \
+            --extra-points extra_points_${{ env.SEASON_YEAR }}.csv \
+            --defense defense_${{ env.SEASON_YEAR }}.csv \
+            --output-dir final_${{ env.SEASON_YEAR }}
+
+      - name: 7. Carregar no Supabase (upsert)
+        working-directory: sources
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python load_to_supabase.py --final-dir final_${{ env.SEASON_YEAR }}
+
+      - name: Salvar CSVs como artefato (para depuração, caso algo falhe)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dados-extraidos-${{ github.run_number }}
+          path: |
+            sources/players_roster.csv
+            sources/stats_${{ env.SEASON_YEAR }}/
+            sources/games_${{ env.SEASON_YEAR }}.csv
+            sources/extra_points_${{ env.SEASON_YEAR }}.csv
+            sources/defense_${{ env.SEASON_YEAR }}.csv
+            sources/final_${{ env.SEASON_YEAR }}/
+          retention-days: 14
