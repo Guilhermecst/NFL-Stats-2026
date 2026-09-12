@@ -73,6 +73,16 @@ def load_roster(path: Path) -> pd.DataFrame:
 def attach_player_id_team(df: pd.DataFrame, roster: pd.DataFrame, year: int) -> pd.DataFrame:
     """Junta um CSV de categoria (só tem player_id) com o roster para
     obter team_id e montar player_id_team."""
+    # dedup na origem: paginação por cursor pode repetir uma linha quando
+    # vários jogadores empatam no critério de ordenação na borda entre
+    # páginas (extract_category_stats.py) — sem isso, o upsert falha com
+    # "ON CONFLICT DO UPDATE command cannot affect row a second time".
+    before = len(df)
+    df = df.drop_duplicates(subset=["player_id"])
+    if len(df) < before:
+        print(f"  [AVISO] {before - len(df)} linha(s) duplicada(s) removida(s) "
+              f"(provável sobreposição de paginação)", file=sys.stderr)
+
     lookup = roster[["player_id", "team_id", "player_id_team"]].drop_duplicates("player_id")
     merged = df.merge(lookup, on="player_id", how="left")
 
@@ -95,9 +105,21 @@ def split_att_made(df: pd.DataFrame, col: str, made_col: str, att_col: str) -> p
 
 
 def to_num(df: pd.DataFrame, cols: list[str]):
+    """Converte para numérico decimal (float) — usar só nas colunas que
+    são numeric()/decimal no banco."""
     for c in cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+
+def to_int(df: pd.DataFrame, cols: list[str]):
+    """Converte para inteiro de verdade — usar nas colunas integer/smallint
+    do banco. Precisa ser um passo separado de to_num() porque
+    pd.to_numeric() sozinho gera float64 (ex: 6.0), e o Postgres rejeita
+    '1.0' num campo integer (psycopg2.errors.InvalidTextRepresentation)."""
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
 
 
 def build_players(roster: pd.DataFrame, year: int) -> pd.DataFrame:
@@ -121,9 +143,10 @@ def build_passing(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFr
         "40plus": "pass_40_yards_plus", "lng": "long_gain", "sck": "sacks",
         "scky": "sacks_yards",
     })
-    to_num(df, ["yards", "yards_per_attempt", "attempts", "completions", "completion_pct",
-                "touchdowns", "interceptions", "rate", "first_downs", "first_down_pct",
-                "pass_20_yards_plus", "pass_40_yards_plus", "long_gain", "sacks", "sacks_yards"])
+    to_num(df, ["yards_per_attempt", "completion_pct", "rate", "first_down_pct"])
+    to_int(df, ["yards", "attempts", "completions", "touchdowns", "interceptions",
+                "first_downs", "pass_20_yards_plus", "pass_40_yards_plus", "long_gain",
+                "sacks", "sacks_yards"])
     cols = ["player_id_team", "season", "yards", "yards_per_attempt", "attempts", "completions",
             "completion_pct", "touchdowns", "interceptions", "rate", "first_downs",
             "first_down_pct", "pass_20_yards_plus", "pass_40_yards_plus", "long_gain",
@@ -140,8 +163,9 @@ def build_rushing(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFr
         "lng": "long_gain", "rush_1st": "first_downs", "rush_1stpct": "first_down_pct",
         "rush_fum": "fumbles",
     })
-    to_num(df, ["yards", "attempts", "touchdowns", "rush_20_yards_plus", "rush_40_yards_plus",
-                "long_gain", "first_downs", "first_down_pct", "fumbles"])
+    to_num(df, ["first_down_pct"])
+    to_int(df, ["yards", "attempts", "touchdowns", "rush_20_yards_plus",
+                "rush_40_yards_plus", "long_gain", "first_downs", "fumbles"])
     cols = ["player_id_team", "season", "yards", "attempts", "touchdowns",
             "rush_20_yards_plus", "rush_40_yards_plus", "long_gain", "first_downs",
             "first_down_pct", "fumbles"]
@@ -157,9 +181,9 @@ def build_receiving(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.Data
         "lng": "long_gain", "rec_1st": "first_downs", "1stpct": "first_down_pct",
         "rec_fum": "fumbles", "rec_yac_per_r": "yards_after_catch", "tgts": "targets",
     })
-    to_num(df, ["receptions", "yards", "touchdowns", "reception_20_yards_plus",
-                "receptions_40_yards_plus", "long_gain", "first_downs", "first_down_pct",
-                "fumbles", "yards_after_catch", "targets"])
+    to_num(df, ["first_down_pct", "yards_after_catch"])
+    to_int(df, ["receptions", "yards", "touchdowns", "reception_20_yards_plus",
+                "receptions_40_yards_plus", "long_gain", "first_downs", "fumbles", "targets"])
     cols = ["player_id_team", "season", "receptions", "yards", "touchdowns",
             "reception_20_yards_plus", "receptions_40_yards_plus", "long_gain",
             "first_downs", "first_down_pct", "fumbles", "yards_after_catch", "targets"]
@@ -174,7 +198,8 @@ def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.Da
         "20plus": "returns_20_yards_plus", "40plus": "returns_40_yards_plus",
         "lng": "long_gain", "fc": "fair_catches", "fum": "fumbles",
     })
-    to_num(df, ["average", "returns", "yards", "touchdowns", "returns_20_yards_plus",
+    to_num(df, ["average"])
+    to_int(df, ["returns", "yards", "touchdowns", "returns_20_yards_plus",
                 "returns_40_yards_plus", "long_gain", "fair_catches", "fumbles"])
     cols = ["player_id_team", "season", "returns", "yards", "average", "touchdowns",
             "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
@@ -198,7 +223,8 @@ def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.Da
             rename_map[candidate_td] = "touchdowns"
             break
     df = df.rename(columns=rename_map)
-    to_num(df, ["average", "returns", "yards", "touchdowns", "returns_20_yards_plus",
+    to_num(df, ["average"])
+    to_int(df, ["returns", "yards", "touchdowns", "returns_20_yards_plus",
                 "returns_40_yards_plus", "long_gain", "fair_catches", "fumbles"])
     cols = ["player_id_team", "season", "returns", "yards", "average", "touchdowns",
             "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
@@ -216,7 +242,8 @@ def build_punting(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFr
         "fc": "fair_catches_against", "ret": "returns_against", "rety": "return_yards_against",
         "td": "return_touchdowns_against", "p_blk": "blocked",
     })
-    to_num(df, ["average", "net_average", "net_yards", "punts", "long_gain", "yards",
+    to_num(df, ["average", "net_average"])
+    to_int(df, ["net_yards", "punts", "long_gain", "yards",
                 "in_20_yards_line", "out_of_bounds", "downed", "touchbacks",
                 "fair_catches_against", "returns_against", "return_yards_against",
                 "return_touchdowns_against", "blocked"])
@@ -241,8 +268,9 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int,
     fg = split_att_made(fg, "40_49_a_m", "fg_made_40_49", "fg_att_40_49")
     fg = split_att_made(fg, "50_59_a_m", "fg_made_50_59", "fg_att_50_59")
     fg = split_att_made(fg, "60plus_a_m", "fg_made_60_plus", "fg_att_60_plus")
-    to_num(fg, ["field_goals_made", "field_goal_attempts", "field_goal_pct",
-                "field_goal_long", "field_goals_blocked"])
+    to_num(fg, ["field_goal_pct"])
+    to_int(fg, ["field_goals_made", "field_goal_attempts", "field_goal_long",
+                "field_goals_blocked"])
 
     ko = pd.read_csv(stats_dir / f"kickoffs_{year}.csv", dtype=str)
     ko = attach_player_id_team(ko, roster, year)
@@ -253,10 +281,10 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int,
         "osk_rec": "onside_kicks_recovered", "oob": "kickoffs_out_of_bounds",
         "td": "kickoff_return_touchdowns_against",
     })
-    to_num(ko, ["kickoffs", "kickoff_yards", "kickoff_return_yards_against", "touchbacks",
-                "touchback_pct", "kickoff_returns_against", "kickoff_return_avg_against",
-                "onside_kicks", "onside_kicks_recovered", "kickoffs_out_of_bounds",
-                "kickoff_return_touchdowns_against"])
+    to_num(ko, ["touchback_pct", "kickoff_return_avg_against"])
+    to_int(ko, ["kickoffs", "kickoff_yards", "kickoff_return_yards_against", "touchbacks",
+                "kickoff_returns_against", "onside_kicks", "onside_kicks_recovered",
+                "kickoffs_out_of_bounds", "kickoff_return_touchdowns_against"])
 
     fg_cols = ["player_id_team", "season", "field_goals_made", "field_goal_attempts",
                "field_goal_pct", "fg_made_1_19", "fg_att_1_19", "fg_made_20_29",
@@ -274,8 +302,8 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int,
     if extra_points_path.exists():
         xp = pd.read_csv(extra_points_path, dtype=str)
         xp["season"] = pd.to_numeric(xp["season"], errors="coerce").astype("Int64")
-        to_num(xp, ["extra_point_attempts", "extra_points_made", "extra_point_pct",
-                    "extra_points_blocked"])
+        to_num(xp, ["extra_point_pct"])
+        to_int(xp, ["extra_point_attempts", "extra_points_made", "extra_points_blocked"])
         merged = merged.merge(xp, on=["player_id_team", "season"], how="left")
     else:
         print(f"  [AVISO] {extra_points_path} não encontrado — colunas de "
@@ -283,6 +311,29 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int,
         for c in ["extra_point_attempts", "extra_points_made", "extra_point_pct",
                   "extra_points_blocked"]:
             merged[c] = 0
+
+    # os merges "outer"/"left" acima introduzem NaN quando um jogador só
+    # aparece em uma das 3 fontes (ex: kicker sem kickoff registrado ainda),
+    # o que reverte colunas inteiras pra float64 de novo — corrige depois de
+    # todos os merges, não só antes.
+    kicking_int_cols = [
+        "field_goals_made", "field_goal_attempts", "fg_made_1_19", "fg_att_1_19",
+        "fg_made_20_29", "fg_att_20_29", "fg_made_30_39", "fg_att_30_39",
+        "fg_made_40_49", "fg_att_40_49", "fg_made_50_59", "fg_att_50_59",
+        "fg_made_60_plus", "fg_att_60_plus", "field_goal_long", "field_goals_blocked",
+        "kickoffs", "kickoff_yards", "kickoff_return_yards_against", "touchbacks",
+        "kickoff_returns_against", "onside_kicks", "onside_kicks_recovered",
+        "kickoffs_out_of_bounds", "kickoff_return_touchdowns_against",
+        "extra_point_attempts", "extra_points_made", "extra_points_blocked",
+    ]
+    kicking_float_cols = ["field_goal_pct", "touchback_pct",
+                          "kickoff_return_avg_against", "extra_point_pct"]
+    for c in kicking_int_cols:
+        if c in merged.columns:
+            merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0).astype(int)
+    for c in kicking_float_cols:
+        if c in merged.columns:
+            merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0)
 
     return merged
 
@@ -292,7 +343,8 @@ def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
     if defense_path.exists():
         defense = pd.read_csv(defense_path, dtype=str)
         defense["season"] = pd.to_numeric(defense["season"], errors="coerce").astype("Int64")
-        to_num(defense, ["combined_tackles", "solo_tackles", "assisted_tackles", "sacks",
+        to_num(defense, ["sacks"])
+        to_int(defense, ["combined_tackles", "solo_tackles", "assisted_tackles",
                           "safeties", "pass_defended"])
     else:
         print(f"  [AVISO] {defense_path} não encontrado — colunas de tackle ficarão nulas",
@@ -305,12 +357,26 @@ def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
         "int": "interceptions", "int_td": "interception_touchdowns",
         "int_yds": "interception_yards", "lng": "interception_long",
     })
-    to_num(intc, ["interceptions", "interception_touchdowns", "interception_yards",
+    to_int(intc, ["interceptions", "interception_touchdowns", "interception_yards",
                   "interception_long"])
     intc_cols = ["player_id_team", "season", "interceptions", "interception_touchdowns",
                  "interception_yards", "interception_long"]
 
     merged = defense.merge(intc[intc_cols], on=["player_id_team", "season"], how="outer")
+
+    # o merge "outer" introduz NaN nas colunas de um lado quando o jogador só
+    # existe no outro (ex: tem tackle mas nunca interceptou) — isso faz o
+    # pandas reverter a coluna pra float64 de novo. Precisa limpar de novo
+    # DEPOIS do merge, não só antes.
+    int_cols = ["combined_tackles", "solo_tackles", "assisted_tackles", "safeties",
+                "pass_defended", "interceptions", "interception_touchdowns",
+                "interception_yards", "interception_long"]
+    for c in int_cols:
+        if c in merged.columns:
+            merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0).astype(int)
+    if "sacks" in merged.columns:
+        merged["sacks"] = pd.to_numeric(merged["sacks"], errors="coerce").fillna(0)
+
     return merged
 
 
