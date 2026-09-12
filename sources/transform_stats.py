@@ -1,0 +1,424 @@
+"""
+transform_stats.py
+
+Fase 3 do pipeline: junta todos os CSVs gerados pelos scripts de extração
+(roster, categorias de líderes, games, extra_points, defense) e produz um
+CSV final por tabela do banco, já com as colunas renomeadas para bater
+com o DDL e prontos para o script de upsert no Supabase.
+
+Entradas esperadas (ajuste os caminhos via argumentos se necessário):
+    players_roster.csv                 (extract_players_roster.py)
+    stats_dir/passing_<ano>.csv         (extract_category_stats.py)
+    stats_dir/rushing_<ano>.csv
+    stats_dir/receiving_<ano>.csv
+    stats_dir/fumbles_<ano>.csv           (lado defensivo: FF/FR/FR TD)
+    stats_dir/interceptions_<ano>.csv
+    stats_dir/field_goals_<ano>.csv
+    stats_dir/kickoffs_<ano>.csv
+    stats_dir/kickoff_returns_<ano>.csv
+    stats_dir/punts_<ano>.csv
+    stats_dir/punt_returns_<ano>.csv
+    games_<ano>.csv                      (extract_qb_games.py)
+    extra_points_<ano>.csv               (extract_extra_points.py)
+    defense_<ano>.csv                    (extract_defense_stats.py — tackles)
+
+Saídas (em --output-dir): players_final.csv, passing_final.csv,
+rushing_final.csv, receiving_final.csv, kicking_final.csv,
+kick_return_final.csv, punt_return_final.csv, punting_final.csv,
+defense_final.csv, fumbles_final.csv, games_final.csv
+
+GAP CONHECIDO / LIMITAÇÃO DA FONTE: as categorias de líderes não separam
+estatísticas por time — um jogador negociado no meio da temporada
+aparece com o total acumulado da temporada inteira sob o TIME ATUAL
+(mesmo se uma parte das estatísticas foi feita pelo time anterior). Isso
+é uma limitação do próprio nfl.com nessas páginas, não deste script: o
+`player_id_team` é montado com o time do roster mais recente.
+
+Uso:
+    python transform_stats.py --year 2026 \
+        --roster players_roster.csv \
+        --stats-dir ./stats_2026 \
+        --games games_2026.csv \
+        --extra-points extra_points_2026.csv \
+        --defense defense_2026.csv \
+        --output-dir ./final_2026
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+# sigla (team_id) -> apelido usado nas colunas "OPP" das páginas de logs
+TEAM_NICKNAMES = {
+    "BUF": "Bills", "MIA": "Dolphins", "NE": "Patriots", "NYJ": "Jets",
+    "BAL": "Ravens", "CIN": "Bengals", "CLE": "Browns", "PIT": "Steelers",
+    "HOU": "Texans", "IND": "Colts", "JAX": "Jaguars", "TEN": "Titans",
+    "DEN": "Broncos", "KC": "Chiefs", "LV": "Raiders", "LAC": "Chargers",
+    "DAL": "Cowboys", "NYG": "Giants", "PHI": "Eagles", "WAS": "Commanders",
+    "CHI": "Bears", "DET": "Lions", "GB": "Packers", "MIN": "Vikings",
+    "ATL": "Falcons", "CAR": "Panthers", "NO": "Saints", "TB": "Buccaneers",
+    "ARI": "Cardinals", "LAR": "Rams", "SF": "49ers", "SEA": "Seahawks",
+}
+NICKNAME_TO_TEAM_ID = {v: k for k, v in TEAM_NICKNAMES.items()}
+
+
+def load_roster(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path, dtype=str)
+    df["player_id_team"] = df["player_id"] + "-" + df["team_id"]
+    return df
+
+
+def attach_player_id_team(df: pd.DataFrame, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+    """Junta um CSV de categoria (só tem player_id) com o roster para
+    obter team_id e montar player_id_team."""
+    lookup = roster[["player_id", "team_id", "player_id_team"]].drop_duplicates("player_id")
+    merged = df.merge(lookup, on="player_id", how="left")
+
+    missing = merged["team_id"].isna().sum()
+    if missing:
+        print(f"  [AVISO] {missing} jogador(es) não encontrados no roster "
+              f"(aposentado/cortado?) — linhas descartadas", file=sys.stderr)
+        merged = merged.dropna(subset=["team_id"])
+
+    merged["season"] = year
+    return merged
+
+
+def split_att_made(df: pd.DataFrame, col: str, made_col: str, att_col: str) -> pd.DataFrame:
+    """Converte uma coluna tipo '8/8' (feito/tentado) em duas colunas numéricas."""
+    parts = df[col].fillna("0/0").str.split("/", expand=True)
+    df[made_col] = pd.to_numeric(parts[0], errors="coerce").fillna(0).astype(int)
+    df[att_col] = pd.to_numeric(parts[1], errors="coerce").fillna(0).astype(int)
+    return df
+
+
+def to_num(df: pd.DataFrame, cols: list[str]):
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+
+def build_players(roster: pd.DataFrame, year: int) -> pd.DataFrame:
+    out = roster.rename(columns={"position": "player_position"})[
+        ["player_id_team", "player_id", "player_name", "player_position", "team_id"]
+    ].copy()
+    out["season"] = year
+    out["player_image_url"] = None  # não capturado pelo roster scraper ainda
+    return out[["player_id_team", "season", "player_id", "player_name", "player_position",
+                "team_id", "player_image_url"]]
+
+
+def build_passing(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+    df = pd.read_csv(stats_dir / f"passing_{year}.csv", dtype=str)
+    df = attach_player_id_team(df, roster, year)
+    df = df.rename(columns={
+        "pass_yds": "yards", "yds_per_att": "yards_per_attempt", "att": "attempts",
+        "cmp": "completions", "cmp_pct": "completion_pct", "td": "touchdowns",
+        "int": "interceptions", "rate": "rate", "1st": "first_downs",
+        "1stpct": "first_down_pct", "20plus": "pass_20_yards_plus",
+        "40plus": "pass_40_yards_plus", "lng": "long_gain", "sck": "sacks",
+        "scky": "sacks_yards",
+    })
+    to_num(df, ["yards", "yards_per_attempt", "attempts", "completions", "completion_pct",
+                "touchdowns", "interceptions", "rate", "first_downs", "first_down_pct",
+                "pass_20_yards_plus", "pass_40_yards_plus", "long_gain", "sacks", "sacks_yards"])
+    cols = ["player_id_team", "season", "yards", "yards_per_attempt", "attempts", "completions",
+            "completion_pct", "touchdowns", "interceptions", "rate", "first_downs",
+            "first_down_pct", "pass_20_yards_plus", "pass_40_yards_plus", "long_gain",
+            "sacks", "sacks_yards"]
+    return df[cols]
+
+
+def build_rushing(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+    df = pd.read_csv(stats_dir / f"rushing_{year}.csv", dtype=str)
+    df = attach_player_id_team(df, roster, year)
+    df = df.rename(columns={
+        "rush_yds": "yards", "att": "attempts", "td": "touchdowns",
+        "20plus": "rush_20_yards_plus", "40plus": "rush_40_yards_plus",
+        "lng": "long_gain", "rush_1st": "first_downs", "rush_1stpct": "first_down_pct",
+        "rush_fum": "fumbles",
+    })
+    to_num(df, ["yards", "attempts", "touchdowns", "rush_20_yards_plus", "rush_40_yards_plus",
+                "long_gain", "first_downs", "first_down_pct", "fumbles"])
+    cols = ["player_id_team", "season", "yards", "attempts", "touchdowns",
+            "rush_20_yards_plus", "rush_40_yards_plus", "long_gain", "first_downs",
+            "first_down_pct", "fumbles"]
+    return df[cols]
+
+
+def build_receiving(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+    df = pd.read_csv(stats_dir / f"receiving_{year}.csv", dtype=str)
+    df = attach_player_id_team(df, roster, year)
+    df = df.rename(columns={
+        "rec": "receptions", "yds": "yards", "td": "touchdowns",
+        "20plus": "reception_20_yards_plus", "40plus": "receptions_40_yards_plus",
+        "lng": "long_gain", "rec_1st": "first_downs", "1stpct": "first_down_pct",
+        "rec_fum": "fumbles", "rec_yac_per_r": "yards_after_catch", "tgts": "targets",
+    })
+    to_num(df, ["receptions", "yards", "touchdowns", "reception_20_yards_plus",
+                "receptions_40_yards_plus", "long_gain", "first_downs", "first_down_pct",
+                "fumbles", "yards_after_catch", "targets"])
+    cols = ["player_id_team", "season", "receptions", "yards", "touchdowns",
+            "reception_20_yards_plus", "receptions_40_yards_plus", "long_gain",
+            "first_downs", "first_down_pct", "fumbles", "yards_after_catch", "targets"]
+    return df[cols]
+
+
+def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+    df = pd.read_csv(stats_dir / f"kickoff_returns_{year}.csv", dtype=str)
+    df = attach_player_id_team(df, roster, year)
+    df = df.rename(columns={
+        "avg": "average", "ret": "returns", "yds": "yards", "kret_td": "touchdowns",
+        "20plus": "returns_20_yards_plus", "40plus": "returns_40_yards_plus",
+        "lng": "long_gain", "fc": "fair_catches", "fum": "fumbles",
+    })
+    to_num(df, ["average", "returns", "yards", "touchdowns", "returns_20_yards_plus",
+                "returns_40_yards_plus", "long_gain", "fair_catches", "fumbles"])
+    cols = ["player_id_team", "season", "returns", "yards", "average", "touchdowns",
+            "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
+            "fumbles"]
+    return df[cols]
+
+
+def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+    df = pd.read_csv(stats_dir / f"punt_returns_{year}.csv", dtype=str)
+    df = attach_player_id_team(df, roster, year)
+    # ATENÇÃO: mapeamento assumido igual ao de Kickoff Returns — ainda não
+    # conferido coluna a coluna contra a extração real. Ajustar se os nomes
+    # de coluna vierem diferentes (ex: "PRet TD" em vez de "KRet TD").
+    rename_map = {
+        "avg": "average", "ret": "returns", "yds": "yards",
+        "20plus": "returns_20_yards_plus", "40plus": "returns_40_yards_plus",
+        "lng": "long_gain", "fc": "fair_catches", "fum": "fumbles",
+    }
+    for candidate_td in ("pret_td", "kret_td", "td"):
+        if candidate_td in df.columns:
+            rename_map[candidate_td] = "touchdowns"
+            break
+    df = df.rename(columns=rename_map)
+    to_num(df, ["average", "returns", "yards", "touchdowns", "returns_20_yards_plus",
+                "returns_40_yards_plus", "long_gain", "fair_catches", "fumbles"])
+    cols = ["player_id_team", "season", "returns", "yards", "average", "touchdowns",
+            "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
+            "fumbles"]
+    return df[[c for c in cols if c in df.columns]]
+
+
+def build_punting(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+    df = pd.read_csv(stats_dir / f"punts_{year}.csv", dtype=str)
+    df = attach_player_id_team(df, roster, year)
+    df = df.rename(columns={
+        "avg": "average", "net_avg": "net_average", "net_yds": "net_yards",
+        "punts": "punts", "lng": "long_gain", "yds": "yards", "in_20": "in_20_yards_line",
+        "oob": "out_of_bounds", "dn": "downed", "tb": "touchbacks",
+        "fc": "fair_catches_against", "ret": "returns_against", "rety": "return_yards_against",
+        "td": "return_touchdowns_against", "p_blk": "blocked",
+    })
+    to_num(df, ["average", "net_average", "net_yards", "punts", "long_gain", "yards",
+                "in_20_yards_line", "out_of_bounds", "downed", "touchbacks",
+                "fair_catches_against", "returns_against", "return_yards_against",
+                "return_touchdowns_against", "blocked"])
+    cols = ["player_id_team", "season", "punts", "yards", "net_yards", "long_gain",
+            "average", "net_average", "blocked", "out_of_bounds", "downed",
+            "in_20_yards_line", "touchbacks", "fair_catches_against", "returns_against",
+            "return_yards_against", "return_touchdowns_against"]
+    return df[cols]
+
+
+def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int,
+                   extra_points_path: Path) -> pd.DataFrame:
+    fg = pd.read_csv(stats_dir / f"field_goals_{year}.csv", dtype=str)
+    fg = attach_player_id_team(fg, roster, year)
+    fg = fg.rename(columns={
+        "fgm": "field_goals_made", "att": "field_goal_attempts", "fg_pct": "field_goal_pct",
+        "lng": "field_goal_long", "fg_blk": "field_goals_blocked",
+    })
+    fg = split_att_made(fg, "1_19_a_m", "fg_made_1_19", "fg_att_1_19")
+    fg = split_att_made(fg, "20_29_a_m", "fg_made_20_29", "fg_att_20_29")
+    fg = split_att_made(fg, "30_39_a_m", "fg_made_30_39", "fg_att_30_39")
+    fg = split_att_made(fg, "40_49_a_m", "fg_made_40_49", "fg_att_40_49")
+    fg = split_att_made(fg, "50_59_a_m", "fg_made_50_59", "fg_att_50_59")
+    fg = split_att_made(fg, "60plus_a_m", "fg_made_60_plus", "fg_att_60_plus")
+    to_num(fg, ["field_goals_made", "field_goal_attempts", "field_goal_pct",
+                "field_goal_long", "field_goals_blocked"])
+
+    ko = pd.read_csv(stats_dir / f"kickoffs_{year}.csv", dtype=str)
+    ko = attach_player_id_team(ko, roster, year)
+    ko = ko.rename(columns={
+        "ko": "kickoffs", "yds": "kickoff_yards", "ret_yds": "kickoff_return_yards_against",
+        "tb": "touchbacks", "tb_pct": "touchback_pct", "ret": "kickoff_returns_against",
+        "ret_avg": "kickoff_return_avg_against", "osk": "onside_kicks",
+        "osk_rec": "onside_kicks_recovered", "oob": "kickoffs_out_of_bounds",
+        "td": "kickoff_return_touchdowns_against",
+    })
+    to_num(ko, ["kickoffs", "kickoff_yards", "kickoff_return_yards_against", "touchbacks",
+                "touchback_pct", "kickoff_returns_against", "kickoff_return_avg_against",
+                "onside_kicks", "onside_kicks_recovered", "kickoffs_out_of_bounds",
+                "kickoff_return_touchdowns_against"])
+
+    fg_cols = ["player_id_team", "season", "field_goals_made", "field_goal_attempts",
+               "field_goal_pct", "fg_made_1_19", "fg_att_1_19", "fg_made_20_29",
+               "fg_att_20_29", "fg_made_30_39", "fg_att_30_39", "fg_made_40_49",
+               "fg_att_40_49", "fg_made_50_59", "fg_att_50_59", "fg_made_60_plus",
+               "fg_att_60_plus", "field_goal_long", "field_goals_blocked"]
+    ko_cols = ["player_id_team", "season", "kickoffs", "kickoff_yards",
+               "kickoff_return_yards_against", "touchbacks", "touchback_pct",
+               "kickoff_returns_against", "kickoff_return_avg_against", "onside_kicks",
+               "onside_kicks_recovered", "kickoffs_out_of_bounds",
+               "kickoff_return_touchdowns_against"]
+
+    merged = fg[fg_cols].merge(ko[ko_cols], on=["player_id_team", "season"], how="outer")
+
+    if extra_points_path.exists():
+        xp = pd.read_csv(extra_points_path, dtype=str)
+        xp["season"] = pd.to_numeric(xp["season"], errors="coerce").astype("Int64")
+        to_num(xp, ["extra_point_attempts", "extra_points_made", "extra_point_pct",
+                    "extra_points_blocked"])
+        merged = merged.merge(xp, on=["player_id_team", "season"], how="left")
+    else:
+        print(f"  [AVISO] {extra_points_path} não encontrado — colunas de "
+              f"extra point ficarão nulas", file=sys.stderr)
+        for c in ["extra_point_attempts", "extra_points_made", "extra_point_pct",
+                  "extra_points_blocked"]:
+            merged[c] = 0
+
+    return merged
+
+
+def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
+                   year: int) -> pd.DataFrame:
+    if defense_path.exists():
+        defense = pd.read_csv(defense_path, dtype=str)
+        defense["season"] = pd.to_numeric(defense["season"], errors="coerce").astype("Int64")
+        to_num(defense, ["combined_tackles", "solo_tackles", "assisted_tackles", "sacks",
+                          "safeties", "pass_defended"])
+    else:
+        print(f"  [AVISO] {defense_path} não encontrado — colunas de tackle ficarão nulas",
+              file=sys.stderr)
+        defense = pd.DataFrame(columns=["player_id_team", "season"])
+
+    intc = pd.read_csv(stats_dir / f"interceptions_{year}.csv", dtype=str)
+    intc = attach_player_id_team(intc, roster, year)
+    intc = intc.rename(columns={
+        "int": "interceptions", "int_td": "interception_touchdowns",
+        "int_yds": "interception_yards", "lng": "interception_long",
+    })
+    to_num(intc, ["interceptions", "interception_touchdowns", "interception_yards",
+                  "interception_long"])
+    intc_cols = ["player_id_team", "season", "interceptions", "interception_touchdowns",
+                 "interception_yards", "interception_long"]
+
+    merged = defense.merge(intc[intc_cols], on=["player_id_team", "season"], how="outer")
+    return merged
+
+
+def build_fumbles(stats_dir: Path, rushing: pd.DataFrame, receiving: pd.DataFrame,
+                   roster: pd.DataFrame, year: int) -> pd.DataFrame:
+    df = pd.read_csv(stats_dir / f"fumbles_{year}.csv", dtype=str)
+    df = attach_player_id_team(df, roster, year)
+    df = df.rename(columns={
+        "ff": "forced_fumbles", "fr": "opponent_fumbles_recovered",
+        "fr_td": "opponent_fumble_recovery_touchdowns",
+    })
+    to_num(df, ["forced_fumbles", "opponent_fumbles_recovered",
+                "opponent_fumble_recovery_touchdowns"])
+    df = df[["player_id_team", "season", "forced_fumbles", "opponent_fumbles_recovered",
+             "opponent_fumble_recovery_touchdowns"]]
+
+    own = rushing[["player_id_team", "season", "fumbles"]].rename(columns={"fumbles": "rush_fum"})
+    own = own.merge(
+        receiving[["player_id_team", "season", "fumbles"]].rename(columns={"fumbles": "rec_fum"}),
+        on=["player_id_team", "season"], how="outer",
+    )
+    own["rush_fum"] = own["rush_fum"].fillna(0)
+    own["rec_fum"] = own["rec_fum"].fillna(0)
+    own["own_fumbles"] = own["rush_fum"] + own["rec_fum"]
+    own = own[["player_id_team", "season", "own_fumbles"]]
+
+    merged = df.merge(own, on=["player_id_team", "season"], how="outer")
+    for c in ["forced_fumbles", "opponent_fumbles_recovered",
+              "opponent_fumble_recovery_touchdowns", "own_fumbles"]:
+        merged[c] = merged[c].fillna(0).astype(int)
+    return merged
+
+
+def build_games(games_path: Path) -> pd.DataFrame:
+    df = pd.read_csv(games_path, dtype=str)
+    df["opponent_id"] = df["opponent"].map(NICKNAME_TO_TEAM_ID)
+
+    unresolved = df[df["opponent_id"].isna()]["opponent"].unique()
+    if len(unresolved):
+        print(f"  [AVISO] apelidos de time não reconhecidos: {list(unresolved)} — "
+              f"confira TEAM_NICKNAMES", file=sys.stderr)
+
+    return df[["team_id", "season", "week", "opponent_id", "home_away", "win_loss",
+               "made_points", "suffered_points"]]
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--year", type=int, required=True)
+    parser.add_argument("--roster", required=True)
+    parser.add_argument("--stats-dir", required=True)
+    parser.add_argument("--games", required=True)
+    parser.add_argument("--extra-points", required=True)
+    parser.add_argument("--defense", required=True)
+    parser.add_argument("--output-dir", default="./final_output")
+    args = parser.parse_args()
+
+    stats_dir = Path(args.stats_dir)
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Carregando roster...")
+    roster = load_roster(Path(args.roster))
+
+    print("Construindo players...")
+    build_players(roster, args.year).to_csv(out_dir / "players_final.csv", index=False)
+
+    print("Construindo passing...")
+    passing = build_passing(stats_dir, roster, args.year)
+    passing.to_csv(out_dir / "passing_final.csv", index=False)
+
+    print("Construindo rushing...")
+    rushing = build_rushing(stats_dir, roster, args.year)
+    rushing.to_csv(out_dir / "rushing_final.csv", index=False)
+
+    print("Construindo receiving...")
+    receiving = build_receiving(stats_dir, roster, args.year)
+    receiving.to_csv(out_dir / "receiving_final.csv", index=False)
+
+    print("Construindo kick_return...")
+    build_kick_return(stats_dir, roster, args.year).to_csv(
+        out_dir / "kick_return_final.csv", index=False)
+
+    print("Construindo punt_return...")
+    build_punt_return(stats_dir, roster, args.year).to_csv(
+        out_dir / "punt_return_final.csv", index=False)
+
+    print("Construindo punting...")
+    build_punting(stats_dir, roster, args.year).to_csv(
+        out_dir / "punting_final.csv", index=False)
+
+    print("Construindo kicking (Field Goals + Kickoffs + Extra Points)...")
+    build_kicking(stats_dir, roster, args.year, Path(args.extra_points)).to_csv(
+        out_dir / "kicking_final.csv", index=False)
+
+    print("Construindo defense (tackles + interceptions)...")
+    build_defense(Path(args.defense), stats_dir, roster, args.year).to_csv(
+        out_dir / "defense_final.csv", index=False)
+
+    print("Construindo fumbles (defensivo + próprio)...")
+    build_fumbles(stats_dir, rushing, receiving, roster, args.year).to_csv(
+        out_dir / "fumbles_final.csv", index=False)
+
+    print("Construindo games...")
+    build_games(Path(args.games)).to_csv(out_dir / "games_final.csv", index=False)
+
+    print(f"\nConcluído. CSVs finais em: {out_dir}/")
+
+
+if __name__ == "__main__":
+    main()

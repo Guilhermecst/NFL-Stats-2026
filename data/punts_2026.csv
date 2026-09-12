@@ -1,0 +1,5 @@
+player_id,player_name,avg,net_avg,net_yds,punts,lng,yds,in_20,oob,dn,tb,fc,ret,rety,td,p_blk
+ethan-evans,Ethan Evans,48.3,42.7,128,3,54,145,2,0,0,0,1,2,17,0,0
+corliss-waitman,Corliss Waitman,47,31.5,63,2,51,94,0,0,0,1,0,1,11,0,0
+michael-dickson,Michael Dickson,45.4,45.4,227,5,50,227,3,2,1,0,2,0,0,0,0
+mitch-wishnowsky,Mitch Wishnowsky,44.2,42,168,4,46,177,3,0,0,0,3,1,9,0,0

@@ -1,0 +1,5 @@
+team_id,season,week,opponent_id,home_away,win_loss,made_points,suffered_points
+LAR,2026,1,SF,Home,L,7,27
+NE,2026,1,SEA,Away,L,10,13
+SEA,2026,1,NE,Home,W,13,10
+SF,2026,1,LAR,Away,W,27,7

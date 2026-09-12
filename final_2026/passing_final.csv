@@ -1,0 +1,7 @@
+player_id_team,season,yards,yards_per_attempt,attempts,completions,completion_pct,touchdowns,interceptions,rate,first_downs,first_down_pct,pass_20_yards_plus,pass_40_yards_plus,long_gain,sacks,sacks_yards
+brock-purdy-SF,2026,205,6.0,34,25,73.5,3,1,105.6,12,35.3,1,0,39,0,0
+drew-lock-SEA,2026,187,8.5,22,16,72.7,1,0,113.3,8,36.4,3,1,45,1,7
+drake-maye-NE,2026,178,5.4,33,23,69.7,1,3,54.9,9,27.3,0,0,19,3,10
+matthew-stafford-LAR,2026,155,6.2,25,15,60.0,0,1,61.2,5,20.0,2,1,41,0,0
+stetson-bennett-LAR,2026,13,4.3,3,2,66.7,0,0,75.7,1,33.3,0,0,8,0,0
+sam-darnold-SEA,2026,13,6.5,2,1,50.0,0,0,70.8,1,50.0,0,0,13,1,5
