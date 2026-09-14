@@ -124,6 +124,12 @@ def main():
                          help="connection string do Postgres (ou defina SUPABASE_DB_URL)")
     args = parser.parse_args()
 
+    # força saída linha-a-linha mesmo quando o processo roda com stdout
+    # redirecionado (caso do GitHub Actions) — sem isso, os prints ficam
+    # em buffer e só aparecem no log de uma vez, misturados de forma
+    # confusa com o traceback (que vai direto pro stderr, sem buffer).
+    sys.stdout.reconfigure(line_buffering=True)
+
     if not args.conn_string:
         print("[ERRO] informe --conn-string ou defina a variável de ambiente "
               "SUPABASE_DB_URL", file=sys.stderr)
