@@ -18,6 +18,7 @@ Entradas esperadas (ajuste os caminhos via argumentos se necessário):
     stats_dir/kickoff_returns_<ano>.csv
     stats_dir/punts_<ano>.csv
     stats_dir/punt_returns_<ano>.csv
+    stats_dir/downs_<ano>.csv            (extract_category_stats.py — tabela por time)
     games_<ano>.csv                      (extract_qb_games.py)
     extra_points_<ano>.csv               (extract_extra_points.py)
     defense_<ano>.csv                    (extract_defense_stats.py — tackles)
@@ -25,7 +26,7 @@ Entradas esperadas (ajuste os caminhos via argumentos se necessário):
 Saídas (em --output-dir): players_final.csv, passing_final.csv,
 rushing_final.csv, receiving_final.csv, kicking_final.csv,
 kick_return_final.csv, punt_return_final.csv, punting_final.csv,
-defense_final.csv, fumbles_final.csv, games_final.csv
+defense_final.csv, fumbles_final.csv, games_final.csv, downs_final.csv
 
 GAP CONHECIDO / LIMITAÇÃO DA FONTE: as categorias de líderes não separam
 estatísticas por time — um jogador negociado no meio da temporada
@@ -70,7 +71,19 @@ def load_roster(path: Path) -> pd.DataFrame:
     return df
 
 
-def attach_player_id_team(df: pd.DataFrame, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+def determine_current_week(games_path: Path) -> int:
+    """A extração de jogos (extract_qb_games.py) já nos diz, por si só,
+    qual é a semana mais recente já disputada: o maior valor de 'week'
+    encontrado no CSV de jogos gerado nesta mesma rodada. Usamos isso
+    como o número da semana do snapshot desta execução."""
+    df = pd.read_csv(games_path, dtype=str)
+    week = pd.to_numeric(df["week"], errors="coerce").max()
+    if pd.isna(week):
+        raise ValueError(f"Não foi possível determinar a semana atual a partir de {games_path}")
+    return int(week)
+
+
+def attach_player_id_team(df: pd.DataFrame, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
     """Junta um CSV de categoria (só tem player_id) com o roster para
     obter team_id e montar player_id_team."""
     # dedup na origem: paginação por cursor pode repetir uma linha quando
@@ -93,6 +106,7 @@ def attach_player_id_team(df: pd.DataFrame, roster: pd.DataFrame, year: int) -> 
         merged = merged.dropna(subset=["team_id"])
 
     merged["season"] = year
+    merged["week"] = week
     return merged
 
 
@@ -132,9 +146,9 @@ def build_players(roster: pd.DataFrame, year: int) -> pd.DataFrame:
                 "team_id", "player_image_url"]]
 
 
-def build_passing(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+def build_passing(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"passing_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year)
+    df = attach_player_id_team(df, roster, year, week)
     df = df.rename(columns={
         "pass_yds": "yards", "yds_per_att": "yards_per_attempt", "att": "attempts",
         "cmp": "completions", "cmp_pct": "completion_pct", "td": "touchdowns",
@@ -147,16 +161,16 @@ def build_passing(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFr
     to_int(df, ["yards", "attempts", "completions", "touchdowns", "interceptions",
                 "first_downs", "pass_20_yards_plus", "pass_40_yards_plus", "long_gain",
                 "sacks", "sacks_yards"])
-    cols = ["player_id_team", "season", "yards", "yards_per_attempt", "attempts", "completions",
+    cols = ["player_id_team", "season", "week", "yards", "yards_per_attempt", "attempts", "completions",
             "completion_pct", "touchdowns", "interceptions", "rate", "first_downs",
             "first_down_pct", "pass_20_yards_plus", "pass_40_yards_plus", "long_gain",
             "sacks", "sacks_yards"]
     return df[cols]
 
 
-def build_rushing(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+def build_rushing(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"rushing_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year)
+    df = attach_player_id_team(df, roster, year, week)
     df = df.rename(columns={
         "rush_yds": "yards", "att": "attempts", "td": "touchdowns",
         "20plus": "rush_20_yards_plus", "40plus": "rush_40_yards_plus",
@@ -166,15 +180,15 @@ def build_rushing(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFr
     to_num(df, ["first_down_pct"])
     to_int(df, ["yards", "attempts", "touchdowns", "rush_20_yards_plus",
                 "rush_40_yards_plus", "long_gain", "first_downs", "fumbles"])
-    cols = ["player_id_team", "season", "yards", "attempts", "touchdowns",
+    cols = ["player_id_team", "season", "week", "yards", "attempts", "touchdowns",
             "rush_20_yards_plus", "rush_40_yards_plus", "long_gain", "first_downs",
             "first_down_pct", "fumbles"]
     return df[cols]
 
 
-def build_receiving(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+def build_receiving(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"receiving_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year)
+    df = attach_player_id_team(df, roster, year, week)
     df = df.rename(columns={
         "rec": "receptions", "yds": "yards", "td": "touchdowns",
         "20plus": "reception_20_yards_plus", "40plus": "receptions_40_yards_plus",
@@ -184,15 +198,15 @@ def build_receiving(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.Data
     to_num(df, ["first_down_pct", "yards_after_catch"])
     to_int(df, ["receptions", "yards", "touchdowns", "reception_20_yards_plus",
                 "receptions_40_yards_plus", "long_gain", "first_downs", "fumbles", "targets"])
-    cols = ["player_id_team", "season", "receptions", "yards", "touchdowns",
+    cols = ["player_id_team", "season", "week", "receptions", "yards", "touchdowns",
             "reception_20_yards_plus", "receptions_40_yards_plus", "long_gain",
             "first_downs", "first_down_pct", "fumbles", "yards_after_catch", "targets"]
     return df[cols]
 
 
-def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"kickoff_returns_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year)
+    df = attach_player_id_team(df, roster, year, week)
     df = df.rename(columns={
         "avg": "average", "ret": "returns", "yds": "yards", "kret_td": "touchdowns",
         "20plus": "returns_20_yards_plus", "40plus": "returns_40_yards_plus",
@@ -201,15 +215,15 @@ def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.Da
     to_num(df, ["average"])
     to_int(df, ["returns", "yards", "touchdowns", "returns_20_yards_plus",
                 "returns_40_yards_plus", "long_gain", "fair_catches", "fumbles"])
-    cols = ["player_id_team", "season", "returns", "yards", "average", "touchdowns",
+    cols = ["player_id_team", "season", "week", "returns", "yards", "average", "touchdowns",
             "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
             "fumbles"]
     return df[cols]
 
 
-def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"punt_returns_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year)
+    df = attach_player_id_team(df, roster, year, week)
     # ATENÇÃO: mapeamento assumido igual ao de Kickoff Returns — ainda não
     # conferido coluna a coluna contra a extração real. Ajustar se os nomes
     # de coluna vierem diferentes (ex: "PRet TD" em vez de "KRet TD").
@@ -226,15 +240,15 @@ def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.Da
     to_num(df, ["average"])
     to_int(df, ["returns", "yards", "touchdowns", "returns_20_yards_plus",
                 "returns_40_yards_plus", "long_gain", "fair_catches", "fumbles"])
-    cols = ["player_id_team", "season", "returns", "yards", "average", "touchdowns",
+    cols = ["player_id_team", "season", "week", "returns", "yards", "average", "touchdowns",
             "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
             "fumbles"]
     return df[[c for c in cols if c in df.columns]]
 
 
-def build_punting(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFrame:
+def build_punting(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"punts_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year)
+    df = attach_player_id_team(df, roster, year, week)
     df = df.rename(columns={
         "avg": "average", "net_avg": "net_average", "net_yds": "net_yards",
         "punts": "punts", "lng": "long_gain", "yds": "yards", "in_20": "in_20_yards_line",
@@ -247,17 +261,17 @@ def build_punting(stats_dir: Path, roster: pd.DataFrame, year: int) -> pd.DataFr
                 "in_20_yards_line", "out_of_bounds", "downed", "touchbacks",
                 "fair_catches_against", "returns_against", "return_yards_against",
                 "return_touchdowns_against", "blocked"])
-    cols = ["player_id_team", "season", "punts", "yards", "net_yards", "long_gain",
+    cols = ["player_id_team", "season", "week", "punts", "yards", "net_yards", "long_gain",
             "average", "net_average", "blocked", "out_of_bounds", "downed",
             "in_20_yards_line", "touchbacks", "fair_catches_against", "returns_against",
             "return_yards_against", "return_touchdowns_against"]
     return df[cols]
 
 
-def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int,
+def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int, week: int,
                    extra_points_path: Path) -> pd.DataFrame:
     fg = pd.read_csv(stats_dir / f"field_goals_{year}.csv", dtype=str)
-    fg = attach_player_id_team(fg, roster, year)
+    fg = attach_player_id_team(fg, roster, year, week)
     fg = fg.rename(columns={
         "fgm": "field_goals_made", "att": "field_goal_attempts", "fg_pct": "field_goal_pct",
         "lng": "field_goal_long", "fg_blk": "field_goals_blocked",
@@ -273,7 +287,7 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int,
                 "field_goals_blocked"])
 
     ko = pd.read_csv(stats_dir / f"kickoffs_{year}.csv", dtype=str)
-    ko = attach_player_id_team(ko, roster, year)
+    ko = attach_player_id_team(ko, roster, year, week)
     ko = ko.rename(columns={
         "ko": "kickoffs", "yds": "kickoff_yards", "ret_yds": "kickoff_return_yards_against",
         "tb": "touchbacks", "tb_pct": "touchback_pct", "ret": "kickoff_returns_against",
@@ -286,25 +300,26 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int,
                 "kickoff_returns_against", "onside_kicks", "onside_kicks_recovered",
                 "kickoffs_out_of_bounds", "kickoff_return_touchdowns_against"])
 
-    fg_cols = ["player_id_team", "season", "field_goals_made", "field_goal_attempts",
+    fg_cols = ["player_id_team", "season", "week", "field_goals_made", "field_goal_attempts",
                "field_goal_pct", "fg_made_1_19", "fg_att_1_19", "fg_made_20_29",
                "fg_att_20_29", "fg_made_30_39", "fg_att_30_39", "fg_made_40_49",
                "fg_att_40_49", "fg_made_50_59", "fg_att_50_59", "fg_made_60_plus",
                "fg_att_60_plus", "field_goal_long", "field_goals_blocked"]
-    ko_cols = ["player_id_team", "season", "kickoffs", "kickoff_yards",
+    ko_cols = ["player_id_team", "season", "week", "kickoffs", "kickoff_yards",
                "kickoff_return_yards_against", "touchbacks", "touchback_pct",
                "kickoff_returns_against", "kickoff_return_avg_against", "onside_kicks",
                "onside_kicks_recovered", "kickoffs_out_of_bounds",
                "kickoff_return_touchdowns_against"]
 
-    merged = fg[fg_cols].merge(ko[ko_cols], on=["player_id_team", "season"], how="outer")
+    merged = fg[fg_cols].merge(ko[ko_cols], on=["player_id_team", "season", "week"], how="outer")
 
     if extra_points_path.exists():
         xp = pd.read_csv(extra_points_path, dtype=str)
         xp["season"] = pd.to_numeric(xp["season"], errors="coerce").astype("Int64")
+        xp["week"] = week
         to_num(xp, ["extra_point_pct"])
         to_int(xp, ["extra_point_attempts", "extra_points_made", "extra_points_blocked"])
-        merged = merged.merge(xp, on=["player_id_team", "season"], how="left")
+        merged = merged.merge(xp, on=["player_id_team", "season", "week"], how="left")
     else:
         print(f"  [AVISO] {extra_points_path} não encontrado — colunas de "
               f"extra point ficarão nulas", file=sys.stderr)
@@ -339,30 +354,31 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int,
 
 
 def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
-                   year: int) -> pd.DataFrame:
+                   year: int, week: int) -> pd.DataFrame:
     if defense_path.exists():
         defense = pd.read_csv(defense_path, dtype=str)
         defense["season"] = pd.to_numeric(defense["season"], errors="coerce").astype("Int64")
+        defense["week"] = week
         to_num(defense, ["sacks"])
         to_int(defense, ["combined_tackles", "solo_tackles", "assisted_tackles",
                           "safeties", "pass_defended"])
     else:
         print(f"  [AVISO] {defense_path} não encontrado — colunas de tackle ficarão nulas",
               file=sys.stderr)
-        defense = pd.DataFrame(columns=["player_id_team", "season"])
+        defense = pd.DataFrame(columns=["player_id_team", "season", "week"])
 
     intc = pd.read_csv(stats_dir / f"interceptions_{year}.csv", dtype=str)
-    intc = attach_player_id_team(intc, roster, year)
+    intc = attach_player_id_team(intc, roster, year, week)
     intc = intc.rename(columns={
         "int": "interceptions", "int_td": "interception_touchdowns",
         "int_yds": "interception_yards", "lng": "interception_long",
     })
     to_int(intc, ["interceptions", "interception_touchdowns", "interception_yards",
                   "interception_long"])
-    intc_cols = ["player_id_team", "season", "interceptions", "interception_touchdowns",
+    intc_cols = ["player_id_team", "season", "week", "interceptions", "interception_touchdowns",
                  "interception_yards", "interception_long"]
 
-    merged = defense.merge(intc[intc_cols], on=["player_id_team", "season"], how="outer")
+    merged = defense.merge(intc[intc_cols], on=["player_id_team", "season", "week"], how="outer")
 
     # o merge "outer" introduz NaN nas colunas de um lado quando o jogador só
     # existe no outro (ex: tem tackle mas nunca interceptou) — isso faz o
@@ -381,33 +397,50 @@ def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
 
 
 def build_fumbles(stats_dir: Path, rushing: pd.DataFrame, receiving: pd.DataFrame,
-                   roster: pd.DataFrame, year: int) -> pd.DataFrame:
+                   roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"fumbles_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year)
+    df = attach_player_id_team(df, roster, year, week)
     df = df.rename(columns={
         "ff": "forced_fumbles", "fr": "opponent_fumbles_recovered",
         "fr_td": "opponent_fumble_recovery_touchdowns",
     })
     to_num(df, ["forced_fumbles", "opponent_fumbles_recovered",
                 "opponent_fumble_recovery_touchdowns"])
-    df = df[["player_id_team", "season", "forced_fumbles", "opponent_fumbles_recovered",
+    df = df[["player_id_team", "season", "week", "forced_fumbles", "opponent_fumbles_recovered",
              "opponent_fumble_recovery_touchdowns"]]
 
-    own = rushing[["player_id_team", "season", "fumbles"]].rename(columns={"fumbles": "rush_fum"})
+    own = rushing[["player_id_team", "season", "week", "fumbles"]].rename(columns={"fumbles": "rush_fum"})
     own = own.merge(
-        receiving[["player_id_team", "season", "fumbles"]].rename(columns={"fumbles": "rec_fum"}),
-        on=["player_id_team", "season"], how="outer",
+        receiving[["player_id_team", "season", "week", "fumbles"]].rename(columns={"fumbles": "rec_fum"}),
+        on=["player_id_team", "season", "week"], how="outer",
     )
     own["rush_fum"] = own["rush_fum"].fillna(0)
     own["rec_fum"] = own["rec_fum"].fillna(0)
     own["own_fumbles"] = own["rush_fum"] + own["rec_fum"]
-    own = own[["player_id_team", "season", "own_fumbles"]]
+    own = own[["player_id_team", "season", "week", "own_fumbles"]]
 
-    merged = df.merge(own, on=["player_id_team", "season"], how="outer")
+    merged = df.merge(own, on=["player_id_team", "season", "week"], how="outer")
     for c in ["forced_fumbles", "opponent_fumbles_recovered",
               "opponent_fumble_recovery_touchdowns", "own_fumbles"]:
         merged[c] = merged[c].fillna(0).astype(int)
     return merged
+
+
+def build_downs(stats_dir: Path, year: int) -> pd.DataFrame:
+    path = stats_dir / f"downs_{year}.csv"
+    if not path.exists():
+        print(f"  [AVISO] {path} não encontrado — downs não será carregado", file=sys.stderr)
+        return pd.DataFrame(columns=["team_id", "season"])
+
+    df = pd.read_csv(path, dtype=str)
+    df["season"] = year
+    int_cols = ["third_down_att", "third_down_made", "fourth_down_att", "fourth_down_made",
+                "receiving_first_downs", "rushing_first_downs", "scrimmage_plays"]
+    float_cols = ["receiving_first_down_pct", "rushing_first_down_pct"]
+    to_int(df, int_cols)
+    to_num(df, float_cols)
+    cols = ["team_id", "season"] + int_cols + float_cols
+    return df[cols]
 
 
 def build_games(games_path: Path) -> pd.DataFrame:
@@ -441,47 +474,53 @@ def main():
     print("Carregando roster...")
     roster = load_roster(Path(args.roster))
 
+    week = determine_current_week(Path(args.games))
+    print(f"Semana atual detectada: {week} (maior 'week' encontrado em {args.games})")
+
     print("Construindo players...")
     build_players(roster, args.year).to_csv(out_dir / "players_final.csv", index=False)
 
     print("Construindo passing...")
-    passing = build_passing(stats_dir, roster, args.year)
+    passing = build_passing(stats_dir, roster, args.year, week)
     passing.to_csv(out_dir / "passing_final.csv", index=False)
 
     print("Construindo rushing...")
-    rushing = build_rushing(stats_dir, roster, args.year)
+    rushing = build_rushing(stats_dir, roster, args.year, week)
     rushing.to_csv(out_dir / "rushing_final.csv", index=False)
 
     print("Construindo receiving...")
-    receiving = build_receiving(stats_dir, roster, args.year)
+    receiving = build_receiving(stats_dir, roster, args.year, week)
     receiving.to_csv(out_dir / "receiving_final.csv", index=False)
 
     print("Construindo kick_return...")
-    build_kick_return(stats_dir, roster, args.year).to_csv(
+    build_kick_return(stats_dir, roster, args.year, week).to_csv(
         out_dir / "kick_return_final.csv", index=False)
 
     print("Construindo punt_return...")
-    build_punt_return(stats_dir, roster, args.year).to_csv(
+    build_punt_return(stats_dir, roster, args.year, week).to_csv(
         out_dir / "punt_return_final.csv", index=False)
 
     print("Construindo punting...")
-    build_punting(stats_dir, roster, args.year).to_csv(
+    build_punting(stats_dir, roster, args.year, week).to_csv(
         out_dir / "punting_final.csv", index=False)
 
     print("Construindo kicking (Field Goals + Kickoffs + Extra Points)...")
-    build_kicking(stats_dir, roster, args.year, Path(args.extra_points)).to_csv(
+    build_kicking(stats_dir, roster, args.year, week, Path(args.extra_points)).to_csv(
         out_dir / "kicking_final.csv", index=False)
 
     print("Construindo defense (tackles + interceptions)...")
-    build_defense(Path(args.defense), stats_dir, roster, args.year).to_csv(
+    build_defense(Path(args.defense), stats_dir, roster, args.year, week).to_csv(
         out_dir / "defense_final.csv", index=False)
 
     print("Construindo fumbles (defensivo + próprio)...")
-    build_fumbles(stats_dir, rushing, receiving, roster, args.year).to_csv(
+    build_fumbles(stats_dir, rushing, receiving, roster, args.year, week).to_csv(
         out_dir / "fumbles_final.csv", index=False)
 
     print("Construindo games...")
     build_games(Path(args.games)).to_csv(out_dir / "games_final.csv", index=False)
+
+    print("Construindo downs...")
+    build_downs(stats_dir, args.year).to_csv(out_dir / "downs_final.csv", index=False)
 
     print(f"\nConcluído. CSVs finais em: {out_dir}/")
 

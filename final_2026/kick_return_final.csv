@@ -1,7 +1,7 @@
-player_id_team,season,returns,yards,average,touchdowns,returns_20_yards_plus,returns_40_yards_plus,long_gain,fair_catches,fumbles
-deebo-samuel-SF,2026,2,74,37.0,0,2,1,45,0,0
-kyle-williams-5-NE,2026,2,58,29.0,0,2,0,29,0,0
-rashid-shaheed-SEA,2026,3,80,26.7,0,3,0,30,0,0
-xavier-smith-LAR,2026,1,25,25.0,0,1,0,25,0,0
-lan-larison-NE,2026,2,49,24.5,0,2,0,27,0,0
-jordan-whittington-LAR,2026,4,94,23.5,0,3,0,31,0,1
+player_id_team,season,week,returns,yards,average,touchdowns,returns_20_yards_plus,returns_40_yards_plus,long_gain,fair_catches,fumbles
+deebo-samuel-SF,2026,1,2,74,37.0,0,2,1,45,0,0
+kyle-williams-5-NE,2026,1,2,58,29.0,0,2,0,29,0,0
+rashid-shaheed-SEA,2026,1,3,80,26.7,0,3,0,30,0,0
+xavier-smith-LAR,2026,1,1,25,25.0,0,1,0,25,0,0
+lan-larison-NE,2026,1,2,49,24.5,0,2,0,27,0,0
+jordan-whittington-LAR,2026,1,4,94,23.5,0,3,0,31,0,1

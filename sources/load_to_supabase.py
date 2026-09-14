@@ -37,23 +37,27 @@ from psycopg2.extras import execute_values
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()  # lê um arquivo .env local, se existir (nunca commitado — ver .gitignore)
+    # aponta explicitamente para o .env na mesma pasta deste script — assim
+    # funciona não importa de onde você rode o comando (não depende do
+    # diretório atual do terminal)
+    load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 except ImportError:
     pass  # python-dotenv é opcional; em produção (GitHub Actions) a env var já vem pronta
 
 # (nome_da_tabela, arquivo_csv, colunas_da_chave_primaria)
 TABLES = [
     ("players", "players_final.csv", ["player_id_team", "season"]),
-    ("passing", "passing_final.csv", ["player_id_team", "season"]),
-    ("rushing", "rushing_final.csv", ["player_id_team", "season"]),
-    ("receiving", "receiving_final.csv", ["player_id_team", "season"]),
-    ("kicking", "kicking_final.csv", ["player_id_team", "season"]),
-    ("kick_return", "kick_return_final.csv", ["player_id_team", "season"]),
-    ("punt_return", "punt_return_final.csv", ["player_id_team", "season"]),
-    ("punting", "punting_final.csv", ["player_id_team", "season"]),
-    ("defense", "defense_final.csv", ["player_id_team", "season"]),
-    ("fumbles", "fumbles_final.csv", ["player_id_team", "season"]),
+    ("passing", "passing_final.csv", ["player_id_team", "season", "week"]),
+    ("rushing", "rushing_final.csv", ["player_id_team", "season", "week"]),
+    ("receiving", "receiving_final.csv", ["player_id_team", "season", "week"]),
+    ("kicking", "kicking_final.csv", ["player_id_team", "season", "week"]),
+    ("kick_return", "kick_return_final.csv", ["player_id_team", "season", "week"]),
+    ("punt_return", "punt_return_final.csv", ["player_id_team", "season", "week"]),
+    ("punting", "punting_final.csv", ["player_id_team", "season", "week"]),
+    ("defense", "defense_final.csv", ["player_id_team", "season", "week"]),
+    ("fumbles", "fumbles_final.csv", ["player_id_team", "season", "week"]),
     ("games", "games_final.csv", ["team_id", "season", "week"]),
+    ("downs", "downs_final.csv", ["team_id", "season"]),
 ]
 
 SCHEMA = "nfl"
@@ -79,6 +83,16 @@ def upsert_table(conn, table: str, csv_path: Path, pk_columns: list[str]):
     if not rows:
         print(f"  [AVISO] {csv_path} está vazio, pulando tabela {table}", file=sys.stderr)
         return 0
+
+    missing_pk = [c for c in pk_columns if c not in columns]
+    if missing_pk:
+        raise ValueError(
+            f"{csv_path} não tem a(s) coluna(s) de chave primária {missing_pk} "
+            f"esperada(s) para a tabela {table}. Isso normalmente significa que o "
+            f"CSV é de uma versão antiga do transform_stats.py — rode o "
+            f"transform_stats.py de novo para gerar um final_<ano>/ atualizado "
+            f"antes de rodar a carga."
+        )
 
     update_columns = [c for c in columns if c not in pk_columns]
 

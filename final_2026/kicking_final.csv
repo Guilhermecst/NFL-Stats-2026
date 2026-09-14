@@ -1,5 +1,5 @@
-player_id_team,season,field_goals_made,field_goal_attempts,field_goal_pct,fg_made_1_19,fg_att_1_19,fg_made_20_29,fg_att_20_29,fg_made_30_39,fg_att_30_39,fg_made_40_49,fg_att_40_49,fg_made_50_59,fg_att_50_59,fg_made_60_plus,fg_att_60_plus,field_goal_long,field_goals_blocked,kickoffs,kickoff_yards,kickoff_return_yards_against,touchbacks,touchback_pct,kickoff_returns_against,kickoff_return_avg_against,onside_kicks,onside_kicks_recovered,kickoffs_out_of_bounds,kickoff_return_touchdowns_against,extra_point_attempts,extra_points_made,extra_point_pct,extra_points_blocked
-andres-borregales-NE,2026,1,1,100.0,0,0,0,0,0,0,0,0,1,1,0,0,50,0,3,192,80,0,0.0,3,26.7,0,0,0,0,1,1,100.0,0
-eddy-pineiro-SF,2026,2,3,66.7,0,0,1,1,0,0,0,0,1,2,0,0,56,0,6,385,119,1,16.7,5,23.8,0,0,0,0,3,3,100.0,0
-harrison-mevis-LAR,2026,0,0,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,124,74,0,0.0,2,37.0,0,0,0,0,1,1,100.0,0
-jason-myers-SEA,2026,2,2,100.0,0,0,1,1,1,1,0,0,0,0,0,0,30,0,4,255,107,0,0.0,4,26.8,0,0,0,0,1,1,100.0,0
+player_id_team,season,week,field_goals_made,field_goal_attempts,field_goal_pct,fg_made_1_19,fg_att_1_19,fg_made_20_29,fg_att_20_29,fg_made_30_39,fg_att_30_39,fg_made_40_49,fg_att_40_49,fg_made_50_59,fg_att_50_59,fg_made_60_plus,fg_att_60_plus,field_goal_long,field_goals_blocked,kickoffs,kickoff_yards,kickoff_return_yards_against,touchbacks,touchback_pct,kickoff_returns_against,kickoff_return_avg_against,onside_kicks,onside_kicks_recovered,kickoffs_out_of_bounds,kickoff_return_touchdowns_against,extra_point_attempts,extra_points_made,extra_point_pct,extra_points_blocked
+andres-borregales-NE,2026,1,1,1,100.0,0,0,0,0,0,0,0,0,1,1,0,0,50,0,3,192,80,0,0.0,3,26.7,0,0,0,0,1,1,100.0,0
+eddy-pineiro-SF,2026,1,2,3,66.7,0,0,1,1,0,0,0,0,1,2,0,0,56,0,6,385,119,1,16.7,5,23.8,0,0,0,0,3,3,100.0,0
+harrison-mevis-LAR,2026,1,0,0,0.0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,124,74,0,0.0,2,37.0,0,0,0,0,1,1,100.0,0
+jason-myers-SEA,2026,1,2,2,100.0,0,0,1,1,1,1,0,0,0,0,0,0,30,0,4,255,107,0,0.0,4,26.8,0,0,0,0,1,1,100.0,0

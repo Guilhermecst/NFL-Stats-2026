@@ -16,9 +16,16 @@ Categoria "Tackles" fica de fora propositalmente: a página está retornando
 sacks/safeties/pass-defended precisam vir do scraper por jogador
 (extract_defense_stats.py, próxima etapa).
 
+Além das categorias de jogador, este script também extrai a tabela
+`downs` (por TIME, temporada inteira, sem paginação — 32 linhas), via
+nfl.com/stats/team-stats/offense/downs/<ano>/reg/all. Essa tabela nunca
+teve extrator (órfã desde o desenho original do banco) — use
+--skip-downs para pular essa parte se só quiser as categorias de jogador.
+
 Saída: um CSV por categoria em --output-dir, com colunas =
 [player_id, player_name] + as colunas exibidas na tabela (nomes
-normalizados: minúsculo, espaços/símbolos -> underscore).
+normalizados: minúsculo, espaços/símbolos -> underscore). Mais um
+downs_<ano>.csv com uma linha por time.
 
 Uso:
     python extract_category_stats.py --year 2026 --output-dir ./stats_2026
@@ -138,6 +145,65 @@ def fetch_category(category: str, sort: str, year: int, session: requests.Sessio
     return all_rows
 
 
+TEAM_STATS_URL = "https://www.nfl.com/stats/team-stats/offense/downs"
+
+# código da sigla usada no src do logo do time -> team_id do nosso banco
+# (a maioria bate direto; só Arizona e os Rams usam um código diferente
+# no nfl.com do que o padrão de sigla que adotamos)
+LOGO_CODE_TO_TEAM_ID = {"AZ": "ARI", "LA": "LAR"}
+LOGO_CODE_RE = re.compile(r"/clubs/logos/([A-Z]+)")
+
+
+def fetch_team_downs(year: int, session: requests.Session) -> list[dict]:
+    """Tabela `downs` (por time, temporada inteira, sem paginação — só 32
+    times). Fonte: nfl.com/stats/team-stats/offense/downs/<ano>/reg/all,
+    que nunca teve extrator (tabela órfã desde o desenho original)."""
+    url = f"{TEAM_STATS_URL}/{year}/reg/all"
+    resp = session.get(url, timeout=20)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    table = None
+    for candidate in soup.find_all("table"):
+        if candidate.find("img", src=LOGO_CODE_RE):
+            table = candidate
+            break
+    if table is None:
+        print("  [AVISO] tabela de Downs não encontrada", file=sys.stderr)
+        return []
+
+    header_cells = [th.get_text(strip=True) for th in table.find("thead").find_all("th")] \
+        if table.find("thead") else []
+    col_map = {
+        "3rd Att": "third_down_att", "3rd Md": "third_down_made",
+        "4th Att": "fourth_down_att", "4th Md": "fourth_down_made",
+        "Rec 1st": "receiving_first_downs", "Rec 1st%": "receiving_first_down_pct",
+        "Rush 1st": "rushing_first_downs", "Rush 1st%": "rushing_first_down_pct",
+        "Scrm Plys": "scrimmage_plays",
+    }
+
+    rows = []
+    body = table.find("tbody") or table
+    for tr in body.find_all("tr"):
+        cells = tr.find_all("td")
+        if not cells:
+            continue
+        img = cells[0].find("img", src=LOGO_CODE_RE)
+        if img is None:
+            continue
+        code = LOGO_CODE_RE.search(img["src"]).group(1)
+        team_id = LOGO_CODE_TO_TEAM_ID.get(code, code)
+
+        row = {"team_id": team_id}
+        for i, header in enumerate(header_cells, start=0):
+            if header not in col_map:
+                continue
+            row[col_map[header]] = cells[i].get_text(strip=True) if i < len(cells) else ""
+        rows.append(row)
+
+    return rows
+
+
 def write_csv(rows: list[dict], path: Path):
     if not rows:
         print(f"  [AVISO] nenhuma linha para {path.name}, arquivo não gerado", file=sys.stderr)
@@ -165,6 +231,8 @@ def main():
                          help="trava de segurança contra loop infinito de paginação")
     parser.add_argument("--categories", nargs="*", default=list(CATEGORIES.keys()),
                          help="subconjunto de categorias a rodar (padrão: todas)")
+    parser.add_argument("--skip-downs", action="store_true",
+                         help="não extrair a tabela downs (por time)")
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -184,6 +252,13 @@ def main():
         write_csv(rows, out_path)
         print(f"  -> {len(rows)} jogadores salvos em {out_path}")
         time.sleep(args.delay)
+
+    if not args.skip_downs:
+        print(f"Extraindo downs (por time, ano={args.year})...")
+        downs_rows = fetch_team_downs(args.year, session)
+        downs_path = out_dir / f"downs_{args.year}.csv"
+        write_csv(downs_rows, downs_path)
+        print(f"  -> {len(downs_rows)} times salvos em {downs_path}")
 
     print("\nConcluído.")
 
