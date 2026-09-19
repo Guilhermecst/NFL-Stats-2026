@@ -12,10 +12,13 @@ ainda não existir, insere. Rodar este script todo santo dia da semana com
 o mesmo player_id_team+season é seguro (idempotente).
 
 Ordem de carga (respeita as FKs do DDL):
-    1. players             (referenciada por todas as tabelas individuais)
-    2. passing, rushing, receiving, kicking, kick_return, punt_return,
+    1. teams                (só atualiza a coluna conf_div; a linha de cada
+                              time já existe via seed — demais colunas de
+                              `teams` não são tocadas por este upsert)
+    2. players             (referenciada por todas as tabelas individuais)
+    3. passing, rushing, receiving, kicking, kick_return, punt_return,
        punting, defense, fumbles   (FK -> players)
-    3. games                (FK -> teams, que já foi populada pelo seed)
+    4. games                (FK -> teams, que já foi populada pelo seed)
 
 Conexão: string de conexão do Postgres do Supabase, via variável de
 ambiente SUPABASE_DB_URL (Project Settings > Database > Connection string
@@ -45,7 +48,11 @@ except ImportError:
     pass  # python-dotenv é opcional; em produção (GitHub Actions) a env var já vem pronta
 
 # (nome_da_tabela, arquivo_csv, colunas_da_chave_primaria)
+# `teams` vem primeiro: só carrega `conf_div` (ex: "NFC East") por cima das
+# linhas já existentes (seed) — a chave primária é só team_id (não varia
+# por temporada). Precisa vir antes de `games`, que tem FK para `teams`.
 TABLES = [
+    ("teams", "teams_final.csv", ["team_id"]),
     ("players", "players_final.csv", ["player_id_team", "season"]),
     ("passing", "passing_final.csv", ["player_id_team", "season", "week"]),
     ("rushing", "rushing_final.csv", ["player_id_team", "season", "week"]),

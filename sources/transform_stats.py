@@ -23,10 +23,15 @@ Entradas esperadas (ajuste os caminhos via argumentos se necessário):
     extra_points_<ano>.csv               (extract_extra_points.py)
     defense_<ano>.csv                    (extract_defense_stats.py — tackles)
 
-Saídas (em --output-dir): players_final.csv, passing_final.csv,
+Saídas (em --output-dir): teams_final.csv, players_final.csv, passing_final.csv,
 rushing_final.csv, receiving_final.csv, kicking_final.csv,
 kick_return_final.csv, punt_return_final.csv, punting_final.csv,
 defense_final.csv, fumbles_final.csv, games_final.csv, downs_final.csv
+
+teams_final.csv: NÃO depende de nenhuma extração (conference/division são
+estáticas), só existe pra alimentar a coluna `conf_div` da tabela `teams`
+(ex: "NFC East") via upsert em load_to_supabase.py — as demais colunas de
+`teams` continuam vindo do seed original, fora deste pipeline.
 
 GAP CONHECIDO / LIMITAÇÃO DA FONTE: as categorias de líderes não separam
 estatísticas por time — um jogador negociado no meio da temporada
@@ -63,6 +68,28 @@ TEAM_NICKNAMES = {
     "ARI": "Cardinals", "LAR": "Rams", "SF": "49ers", "SEA": "Seahawks",
 }
 NICKNAME_TO_TEAM_ID = {v: k for k, v in TEAM_NICKNAMES.items()}
+
+# sigla (team_id) -> "<Conferência> <Divisão>", ex: "NFC East".
+# Alinhamento de divisões da NFL (estático — só muda em realinhamentos
+# raros da liga, não precisa ser re-extraído toda semana).
+TEAM_CONF_DIV = {
+    # AFC East
+    "BUF": "AFC East", "MIA": "AFC East", "NE": "AFC East", "NYJ": "AFC East",
+    # AFC North
+    "BAL": "AFC North", "CIN": "AFC North", "CLE": "AFC North", "PIT": "AFC North",
+    # AFC South
+    "HOU": "AFC South", "IND": "AFC South", "JAX": "AFC South", "TEN": "AFC South",
+    # AFC West
+    "DEN": "AFC West", "KC": "AFC West", "LV": "AFC West", "LAC": "AFC West",
+    # NFC East
+    "DAL": "NFC East", "NYG": "NFC East", "PHI": "NFC East", "WAS": "NFC East",
+    # NFC North
+    "CHI": "NFC North", "DET": "NFC North", "GB": "NFC North", "MIN": "NFC North",
+    # NFC South
+    "ATL": "NFC South", "CAR": "NFC South", "NO": "NFC South", "TB": "NFC South",
+    # NFC West
+    "ARI": "NFC West", "LAR": "NFC West", "SF": "NFC West", "SEA": "NFC West",
+}
 
 
 def load_roster(path: Path) -> pd.DataFrame:
@@ -134,6 +161,18 @@ def to_int(df: pd.DataFrame, cols: list[str]):
     for c in cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+
+
+def build_teams() -> pd.DataFrame:
+    """Tabela `teams`, só a coluna nova `conf_div` (ex: "NFC East").
+    Não depende de nenhum CSV de extração — vem de TEAM_CONF_DIV, um mapa
+    estático (a divisão de um time só muda em realinhamentos raros da
+    liga). As demais colunas de `teams` (nome, cidade, logo, etc.)
+    continuam vindo do seed original e não são tocadas por este pipeline;
+    o upsert em load_to_supabase.py atualiza só `conf_div` para cada
+    team_id já existente."""
+    rows = [{"team_id": team_id, "conf_div": conf_div} for team_id, conf_div in TEAM_CONF_DIV.items()]
+    return pd.DataFrame(rows, columns=["team_id", "conf_div"])
 
 
 def build_players(roster: pd.DataFrame, year: int) -> pd.DataFrame:
@@ -470,6 +509,9 @@ def main():
     stats_dir = Path(args.stats_dir)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Construindo teams (conf_div)...")
+    build_teams().to_csv(out_dir / "teams_final.csv", index=False)
 
     print("Carregando roster...")
     roster = load_roster(Path(args.roster))
