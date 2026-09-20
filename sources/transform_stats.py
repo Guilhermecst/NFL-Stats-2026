@@ -40,6 +40,20 @@ aparece com o total acumulado da temporada inteira sob o TIME ATUAL
 é uma limitação do próprio nfl.com nessas páginas, não deste script: o
 `player_id_team` é montado com o time do roster mais recente.
 
+SEMANA POR TIME, NÃO GLOBAL: as categorias de líderes trazem o total
+ACUMULADO DA TEMPORADA de cada jogador (não um valor por semana), então
+o script precisa decidir sob qual "semana" gravar aquele total no banco.
+Ele faz isso via determine_team_weeks(), que olha, TIME A TIME, qual foi
+a última semana com jogo disputado no CSV de games desta mesma rodada —
+e não um único número de semana "global" (a maior de toda a liga). Isso
+importa em execuções fora do dia de cron normal (ex: rodando no meio da
+semana pra validar algo, enquanto só alguns times já jogaram): um
+jogador de um time que ainda não jogou continua sendo gravado sob a
+última semana REAL do próprio time (sobrescrevendo a mesma linha,
+idempotente) até que o jogo dele apareça no log — em vez de criar uma
+linha "semana N" espúria, idêntica à "semana N-1", só porque outro time
+qualquer já jogou a rodada N.
+
 Uso:
     python transform_stats.py --year 2026 \
         --roster players_roster.csv \
@@ -98,21 +112,43 @@ def load_roster(path: Path) -> pd.DataFrame:
     return df
 
 
-def determine_current_week(games_path: Path) -> int:
-    """A extração de jogos (extract_qb_games.py) já nos diz, por si só,
-    qual é a semana mais recente já disputada: o maior valor de 'week'
-    encontrado no CSV de jogos gerado nesta mesma rodada. Usamos isso
-    como o número da semana do snapshot desta execução."""
+def determine_team_weeks(games_path: Path) -> dict[str, int]:
+    """Retorna, POR TIME, a última semana com jogo já disputado no CSV de
+    jogos desta rodada (extract_qb_games.py) — não um único número global.
+
+    Por quê: as categorias de líderes (extract_category_stats.py) trazem o
+    TOTAL ACUMULADO DA TEMPORADA de cada jogador, não um valor por semana.
+    Se a execução acontece no meio da semana — nem todos os 32 times já
+    jogaram — usar a MAIOR semana entre TODOS os times faz o script
+    carimbar jogadores de times que ainda não jogaram com o número da
+    semana seguinte, mesmo que o total deles ainda seja o da semana
+    anterior (o jogador simplesmente ainda não jogou). Isso cria uma linha
+    nova "semana N" idêntica à "semana N-1", uma duplicata falsa no banco.
+
+    Com o mapa por time, um jogador de um time que ainda não jogou a
+    semana mais recente continua sendo gravado sob a última semana real
+    do PRÓPRIO time (sobrescrevendo a mesma linha, idempotente) até que o
+    jogo dele apareça no log — sem criar linha espúria."""
     df = pd.read_csv(games_path, dtype=str)
-    week = pd.to_numeric(df["week"], errors="coerce").max()
-    if pd.isna(week):
+    df["week"] = pd.to_numeric(df["week"], errors="coerce")
+    df = df.dropna(subset=["week"])
+    if df.empty:
         raise ValueError(f"Não foi possível determinar a semana atual a partir de {games_path}")
-    return int(week)
+    return df.groupby("team_id")["week"].max().astype(int).to_dict()
 
 
-def attach_player_id_team(df: pd.DataFrame, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
+def team_id_from_player_id_team(player_id_team: str) -> str:
+    """Extrai o team_id de um player_id_team (ex: 'patrick-mahomes-KC' ->
+    'KC'). Usado só para CSVs que já chegam nesse formato combinado (extra
+    points, defense) e não trazem team_id como coluna própria."""
+    return player_id_team.rsplit("-", 1)[-1]
+
+
+def attach_player_id_team(df: pd.DataFrame, roster: pd.DataFrame, year: int,
+                           team_weeks: dict[str, int]) -> pd.DataFrame:
     """Junta um CSV de categoria (só tem player_id) com o roster para
-    obter team_id e montar player_id_team."""
+    obter team_id e montar player_id_team, e carimba cada linha com a
+    semana do PRÓPRIO time do jogador (ver determine_team_weeks)."""
     # dedup na origem: paginação por cursor pode repetir uma linha quando
     # vários jogadores empatam no critério de ordenação na borda entre
     # páginas (extract_category_stats.py) — sem isso, o upsert falha com
@@ -133,7 +169,14 @@ def attach_player_id_team(df: pd.DataFrame, roster: pd.DataFrame, year: int, wee
         merged = merged.dropna(subset=["team_id"])
 
     merged["season"] = year
-    merged["week"] = week
+    merged["week"] = merged["team_id"].map(team_weeks)
+    no_week = merged["week"].isna().sum()
+    if no_week:
+        print(f"  [AVISO] {no_week} jogador(es) de time(s) sem nenhum jogo "
+              f"registrado ainda em {list(merged.loc[merged['week'].isna(), 'team_id'].unique())} "
+              f"— linhas descartadas", file=sys.stderr)
+        merged = merged.dropna(subset=["week"])
+    merged["week"] = merged["week"].astype(int)
     return merged
 
 
@@ -185,9 +228,9 @@ def build_players(roster: pd.DataFrame, year: int) -> pd.DataFrame:
                 "team_id", "player_image_url"]]
 
 
-def build_passing(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
+def build_passing(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"passing_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year, week)
+    df = attach_player_id_team(df, roster, year, team_weeks)
     df = df.rename(columns={
         "pass_yds": "yards", "yds_per_att": "yards_per_attempt", "att": "attempts",
         "cmp": "completions", "cmp_pct": "completion_pct", "td": "touchdowns",
@@ -207,9 +250,9 @@ def build_passing(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -
     return df[cols]
 
 
-def build_rushing(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
+def build_rushing(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"rushing_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year, week)
+    df = attach_player_id_team(df, roster, year, team_weeks)
     df = df.rename(columns={
         "rush_yds": "yards", "att": "attempts", "td": "touchdowns",
         "20plus": "rush_20_yards_plus", "40plus": "rush_40_yards_plus",
@@ -225,9 +268,9 @@ def build_rushing(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -
     return df[cols]
 
 
-def build_receiving(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
+def build_receiving(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"receiving_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year, week)
+    df = attach_player_id_team(df, roster, year, team_weeks)
     df = df.rename(columns={
         "rec": "receptions", "yds": "yards", "td": "touchdowns",
         "20plus": "reception_20_yards_plus", "40plus": "receptions_40_yards_plus",
@@ -243,9 +286,9 @@ def build_receiving(stats_dir: Path, roster: pd.DataFrame, year: int, week: int)
     return df[cols]
 
 
-def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
+def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"kickoff_returns_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year, week)
+    df = attach_player_id_team(df, roster, year, team_weeks)
     df = df.rename(columns={
         "avg": "average", "ret": "returns", "yds": "yards", "kret_td": "touchdowns",
         "20plus": "returns_20_yards_plus", "40plus": "returns_40_yards_plus",
@@ -260,9 +303,9 @@ def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int, week: in
     return df[cols]
 
 
-def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
+def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"punt_returns_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year, week)
+    df = attach_player_id_team(df, roster, year, team_weeks)
     # ATENÇÃO: mapeamento assumido igual ao de Kickoff Returns — ainda não
     # conferido coluna a coluna contra a extração real. Ajustar se os nomes
     # de coluna vierem diferentes (ex: "PRet TD" em vez de "KRet TD").
@@ -285,9 +328,9 @@ def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int, week: in
     return df[[c for c in cols if c in df.columns]]
 
 
-def build_punting(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
+def build_punting(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"punts_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year, week)
+    df = attach_player_id_team(df, roster, year, team_weeks)
     df = df.rename(columns={
         "avg": "average", "net_avg": "net_average", "net_yds": "net_yards",
         "punts": "punts", "lng": "long_gain", "yds": "yards", "in_20": "in_20_yards_line",
@@ -307,10 +350,10 @@ def build_punting(stats_dir: Path, roster: pd.DataFrame, year: int, week: int) -
     return df[cols]
 
 
-def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int, week: int,
+def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: dict[str, int],
                    extra_points_path: Path) -> pd.DataFrame:
     fg = pd.read_csv(stats_dir / f"field_goals_{year}.csv", dtype=str)
-    fg = attach_player_id_team(fg, roster, year, week)
+    fg = attach_player_id_team(fg, roster, year, team_weeks)
     fg = fg.rename(columns={
         "fgm": "field_goals_made", "att": "field_goal_attempts", "fg_pct": "field_goal_pct",
         "lng": "field_goal_long", "fg_blk": "field_goals_blocked",
@@ -326,7 +369,7 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int, week: int,
                 "field_goals_blocked"])
 
     ko = pd.read_csv(stats_dir / f"kickoffs_{year}.csv", dtype=str)
-    ko = attach_player_id_team(ko, roster, year, week)
+    ko = attach_player_id_team(ko, roster, year, team_weeks)
     ko = ko.rename(columns={
         "ko": "kickoffs", "yds": "kickoff_yards", "ret_yds": "kickoff_return_yards_against",
         "tb": "touchbacks", "tb_pct": "touchback_pct", "ret": "kickoff_returns_against",
@@ -355,7 +398,18 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int, week: int,
     if extra_points_path.exists():
         xp = pd.read_csv(extra_points_path, dtype=str)
         xp["season"] = pd.to_numeric(xp["season"], errors="coerce").astype("Int64")
-        xp["week"] = week
+        # extra_points_<ano>.csv só tem player_id_team (sem team_id em
+        # coluna própria) — extrai o time de cada linha pra carimbar com a
+        # semana REAL daquele time, igual attach_player_id_team faz pras
+        # outras fontes (ver determine_team_weeks).
+        xp_team_id = xp["player_id_team"].map(team_id_from_player_id_team)
+        xp["week"] = xp_team_id.map(team_weeks)
+        no_week = xp["week"].isna().sum()
+        if no_week:
+            print(f"  [AVISO] {no_week} kicker(s) de time(s) sem jogo registrado ainda "
+                  f"— linhas de extra point descartadas", file=sys.stderr)
+            xp = xp.dropna(subset=["week"])
+        xp["week"] = xp["week"].astype(int)
         to_num(xp, ["extra_point_pct"])
         to_int(xp, ["extra_point_attempts", "extra_points_made", "extra_points_blocked"])
         merged = merged.merge(xp, on=["player_id_team", "season", "week"], how="left")
@@ -393,11 +447,20 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int, week: int,
 
 
 def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
-                   year: int, week: int) -> pd.DataFrame:
+                   year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
     if defense_path.exists():
         defense = pd.read_csv(defense_path, dtype=str)
         defense["season"] = pd.to_numeric(defense["season"], errors="coerce").astype("Int64")
-        defense["week"] = week
+        # defense_<ano>.csv só tem player_id_team (sem team_id em coluna
+        # própria) — mesmo tratamento do extra_points em build_kicking.
+        defense_team_id = defense["player_id_team"].map(team_id_from_player_id_team)
+        defense["week"] = defense_team_id.map(team_weeks)
+        no_week = defense["week"].isna().sum()
+        if no_week:
+            print(f"  [AVISO] {no_week} jogador(es) defensivo(s) de time(s) sem jogo "
+                  f"registrado ainda — linhas descartadas", file=sys.stderr)
+            defense = defense.dropna(subset=["week"])
+        defense["week"] = defense["week"].astype(int)
         to_num(defense, ["sacks"])
         to_int(defense, ["combined_tackles", "solo_tackles", "assisted_tackles",
                           "safeties", "pass_defended"])
@@ -407,7 +470,7 @@ def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
         defense = pd.DataFrame(columns=["player_id_team", "season", "week"])
 
     intc = pd.read_csv(stats_dir / f"interceptions_{year}.csv", dtype=str)
-    intc = attach_player_id_team(intc, roster, year, week)
+    intc = attach_player_id_team(intc, roster, year, team_weeks)
     intc = intc.rename(columns={
         "int": "interceptions", "int_td": "interception_touchdowns",
         "int_yds": "interception_yards", "lng": "interception_long",
@@ -436,9 +499,9 @@ def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
 
 
 def build_fumbles(stats_dir: Path, rushing: pd.DataFrame, receiving: pd.DataFrame,
-                   roster: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
+                   roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
     df = pd.read_csv(stats_dir / f"fumbles_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year, week)
+    df = attach_player_id_team(df, roster, year, team_weeks)
     df = df.rename(columns={
         "ff": "forced_fumbles", "fr": "opponent_fumbles_recovered",
         "fr_td": "opponent_fumble_recovery_touchdowns",
@@ -516,46 +579,55 @@ def main():
     print("Carregando roster...")
     roster = load_roster(Path(args.roster))
 
-    week = determine_current_week(Path(args.games))
-    print(f"Semana atual detectada: {week} (maior 'week' encontrado em {args.games})")
+    team_weeks = determine_team_weeks(Path(args.games))
+    weeks_found = sorted(set(team_weeks.values()))
+    if len(weeks_found) > 1:
+        behind = sorted(t for t, w in team_weeks.items() if w < weeks_found[-1])
+        print(f"[AVISO] Execução parcial: {len(behind)} time(s) ainda na semana "
+              f"{weeks_found[0]} enquanto outros já estão na semana {weeks_found[-1]}: "
+              f"{behind}. Cada jogador será carimbado com a semana real do PRÓPRIO "
+              f"time (ver determine_team_weeks) — não com a maior semana da liga.",
+              file=sys.stderr)
+    else:
+        print(f"Semana atual detectada (todos os times): {weeks_found[0]}")
 
     print("Construindo players...")
     build_players(roster, args.year).to_csv(out_dir / "players_final.csv", index=False)
 
     print("Construindo passing...")
-    passing = build_passing(stats_dir, roster, args.year, week)
+    passing = build_passing(stats_dir, roster, args.year, team_weeks)
     passing.to_csv(out_dir / "passing_final.csv", index=False)
 
     print("Construindo rushing...")
-    rushing = build_rushing(stats_dir, roster, args.year, week)
+    rushing = build_rushing(stats_dir, roster, args.year, team_weeks)
     rushing.to_csv(out_dir / "rushing_final.csv", index=False)
 
     print("Construindo receiving...")
-    receiving = build_receiving(stats_dir, roster, args.year, week)
+    receiving = build_receiving(stats_dir, roster, args.year, team_weeks)
     receiving.to_csv(out_dir / "receiving_final.csv", index=False)
 
     print("Construindo kick_return...")
-    build_kick_return(stats_dir, roster, args.year, week).to_csv(
+    build_kick_return(stats_dir, roster, args.year, team_weeks).to_csv(
         out_dir / "kick_return_final.csv", index=False)
 
     print("Construindo punt_return...")
-    build_punt_return(stats_dir, roster, args.year, week).to_csv(
+    build_punt_return(stats_dir, roster, args.year, team_weeks).to_csv(
         out_dir / "punt_return_final.csv", index=False)
 
     print("Construindo punting...")
-    build_punting(stats_dir, roster, args.year, week).to_csv(
+    build_punting(stats_dir, roster, args.year, team_weeks).to_csv(
         out_dir / "punting_final.csv", index=False)
 
     print("Construindo kicking (Field Goals + Kickoffs + Extra Points)...")
-    build_kicking(stats_dir, roster, args.year, week, Path(args.extra_points)).to_csv(
+    build_kicking(stats_dir, roster, args.year, team_weeks, Path(args.extra_points)).to_csv(
         out_dir / "kicking_final.csv", index=False)
 
     print("Construindo defense (tackles + interceptions)...")
-    build_defense(Path(args.defense), stats_dir, roster, args.year, week).to_csv(
+    build_defense(Path(args.defense), stats_dir, roster, args.year, team_weeks).to_csv(
         out_dir / "defense_final.csv", index=False)
 
     print("Construindo fumbles (defensivo + próprio)...")
-    build_fumbles(stats_dir, rushing, receiving, roster, args.year, week).to_csv(
+    build_fumbles(stats_dir, rushing, receiving, roster, args.year, team_weeks).to_csv(
         out_dir / "fumbles_final.csv", index=False)
 
     print("Construindo games...")
