@@ -34,34 +34,30 @@ jobs:
         working-directory: sources
         run: python extract_players_roster.py --output players_roster.csv
 
-      - name: 2. Extrair categorias de líderes
+      - name: 2. Extrair categorias de líderes (cumulativo — ver seção 10 da documentação)
         working-directory: sources
         run: python extract_category_stats.py --year ${{ env.SEASON_YEAR }} --output-dir stats_${{ env.SEASON_YEAR }}
 
-      - name: 3. Extrair jogos (via QBs)
+      - name: 3. Extrair logs por jogador (games + extra points + defense, semana a semana)
         working-directory: sources
-        run: python extract_qb_games.py --roster players_roster.csv --year ${{ env.SEASON_YEAR }} --output games_${{ env.SEASON_YEAR }}.csv
+        run: |
+          python extract_player_game_logs.py \
+            --roster players_roster.csv \
+            --year ${{ env.SEASON_YEAR }} \
+            --output-dir logs_${{ env.SEASON_YEAR }}
 
-      - name: 4. Extrair extra points (kickers)
-        working-directory: sources
-        run: python extract_extra_points.py --roster players_roster.csv --year ${{ env.SEASON_YEAR }} --output extra_points_${{ env.SEASON_YEAR }}.csv
-
-      - name: 5. Extrair defense (tackles/sacks)
-        working-directory: sources
-        run: python extract_defense_stats.py --roster players_roster.csv --year ${{ env.SEASON_YEAR }} --output defense_${{ env.SEASON_YEAR }}.csv
-
-      - name: 6. Transformar dados (junta tudo no formato do banco)
+      - name: 4. Transformar dados (junta tudo no formato do banco)
         working-directory: sources
         run: |
           python transform_stats.py --year ${{ env.SEASON_YEAR }} \
             --roster players_roster.csv \
             --stats-dir stats_${{ env.SEASON_YEAR }} \
-            --games games_${{ env.SEASON_YEAR }}.csv \
-            --extra-points extra_points_${{ env.SEASON_YEAR }}.csv \
-            --defense defense_${{ env.SEASON_YEAR }}.csv \
+            --games logs_${{ env.SEASON_YEAR }}/games_${{ env.SEASON_YEAR }}.csv \
+            --extra-points logs_${{ env.SEASON_YEAR }}/extra_points_${{ env.SEASON_YEAR }}.csv \
+            --defense logs_${{ env.SEASON_YEAR }}/defense_${{ env.SEASON_YEAR }}.csv \
             --output-dir final_${{ env.SEASON_YEAR }}
 
-      - name: 7. Carregar no Supabase (upsert)
+      - name: 5. Carregar no Supabase (upsert)
         working-directory: sources
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -75,8 +71,6 @@ jobs:
           path: |
             sources/players_roster.csv
             sources/stats_${{ env.SEASON_YEAR }}/
-            sources/games_${{ env.SEASON_YEAR }}.csv
-            sources/extra_points_${{ env.SEASON_YEAR }}.csv
-            sources/defense_${{ env.SEASON_YEAR }}.csv
+            sources/logs_${{ env.SEASON_YEAR }}/
             sources/final_${{ env.SEASON_YEAR }}/
           retention-days: 14

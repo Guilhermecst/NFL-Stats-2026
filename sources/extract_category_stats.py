@@ -22,6 +22,46 @@ nfl.com/stats/team-stats/offense/downs/<ano>/reg/all. Essa tabela nunca
 teve extrator (órfã desde o desenho original do banco) — use
 --skip-downs para pular essa parte se só quiser as categorias de jogador.
 
+LIMITAÇÃO CONHECIDA / TODO — fonte cumulativa, sem histórico semanal:
+As páginas de líderes usadas aqui são um SNAPSHOT AO VIVO: sempre
+retornam o total acumulado da temporada ATÉ O MOMENTO DA REQUISIÇÃO, não
+um total "congelado" de uma semana específica. Não existe parâmetro de
+semana nessa URL — depois que a semana N passa, não tem como pedir ao
+nfl.com "como estava o acumulado no fim da semana N"; esse estado já foi
+sobrescrito na própria fonte.
+
+Consequência prática: se o banco for limpo e o pipeline reexecutado do
+zero em qualquer momento da temporada, as tabelas alimentadas por este
+script (passing, rushing, receiving, fumbles, kick_return, punt_return,
+punting, e as partes de field-goals/kickoffs de kicking) NÃO recuperam o
+histórico semana-a-semana já ocorrido — só reconstroem UMA linha por
+jogador, com o total acumulado atual, carimbada com a última semana real
+de cada time. O breakdown "quanto ele tinha exatamente até a semana 1,
+até a semana 2, etc." se perde, porque a fonte nunca guardou isso — só o
+scraper rodando AO VIVO, semana a semana, é que capturava cada ponto no
+tempo.
+
+Isso é diferente de extract_qb_games.py / extract_extra_points.py /
+extract_defense_stats.py, que usam a página de Logs por jogador
+(/players/<slug>/stats/logs/<ano>/) — essa página já é NATIVAMENTE
+semana-a-semana (uma linha por WK), então reexecutar do zero a qualquer
+momento reconstrói o histórico completo sem perda.
+
+Correção futura considerada (ainda não implementada): migrar as
+categorias deste script para a mesma fonte de Logs por jogador (que já
+traz, numa única página por atleta, passing/rushing/receiving/etc.
+conforme a posição), em vez das páginas de líderes cumulativas. Isso
+tornaria o resultado do pipeline independente de QUANDO ele é executado
+— qualquer pessoa rodando do zero, em qualquer semana, chegaria ao mesmo
+histórico completo. É uma reescrita de escopo maior (troca ~10
+requisições de categoria por ~1 requisição por jogador do roster, escala
+parecida com a que extract_defense_stats.py já usa hoje só pra
+defensivos), por isso foi adiada — mas é a única forma de eliminar essa
+limitação por completo. Enquanto isso não é feito, evite depender de
+"zerar e reprocessar do zero" para recuperar estatísticas semanais
+passadas: a única fonte confiável pra isso é backup do banco ou os CSVs
+finais (final_<ano>/*.csv) já gerados em execuções anteriores.
+
 Saída: um CSV por categoria em --output-dir, com colunas =
 [player_id, player_name] + as colunas exibidas na tabela (nomes
 normalizados: minúsculo, espaços/símbolos -> underscore). Mais um

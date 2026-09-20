@@ -8,20 +8,35 @@ com o DDL e prontos para o script de upsert no Supabase.
 
 Entradas esperadas (ajuste os caminhos via argumentos se necessário):
     players_roster.csv                 (extract_players_roster.py)
-    stats_dir/passing_<ano>.csv         (extract_category_stats.py)
-    stats_dir/rushing_<ano>.csv
-    stats_dir/receiving_<ano>.csv
-    stats_dir/fumbles_<ano>.csv           (lado defensivo: FF/FR/FR TD)
-    stats_dir/interceptions_<ano>.csv
-    stats_dir/field_goals_<ano>.csv
-    stats_dir/kickoffs_<ano>.csv
-    stats_dir/kickoff_returns_<ano>.csv
-    stats_dir/punts_<ano>.csv
-    stats_dir/punt_returns_<ano>.csv
-    stats_dir/downs_<ano>.csv            (extract_category_stats.py — tabela por time)
-    games_<ano>.csv                      (extract_qb_games.py)
-    extra_points_<ano>.csv               (extract_extra_points.py)
-    defense_<ano>.csv                    (extract_defense_stats.py — tackles)
+    stats_dir/passing_<ano>.csv         (extract_category_stats.py — GAP CONHECIDO: cumulativo, sem semana)
+    stats_dir/rushing_<ano>.csv         (idem)
+    stats_dir/receiving_<ano>.csv       (idem)
+    stats_dir/fumbles_<ano>.csv           (lado defensivo: FF/FR/FR TD — idem)
+    stats_dir/interceptions_<ano>.csv   (idem)
+    stats_dir/field_goals_<ano>.csv     (idem)
+    stats_dir/kickoffs_<ano>.csv        (idem)
+    stats_dir/kickoff_returns_<ano>.csv (idem)
+    stats_dir/punts_<ano>.csv           (idem)
+    stats_dir/punt_returns_<ano>.csv    (idem)
+    stats_dir/downs_<ano>.csv            (extract_category_stats.py — tabela por time, sem `week`, ok)
+    games_<ano>.csv                      (extract_player_game_logs.py — já por semana real)
+    extra_points_<ano>.csv               (extract_player_game_logs.py — já por semana real, ver abaixo)
+    defense_<ano>.csv                    (extract_player_game_logs.py — tackles, já por semana real)
+
+games_<ano>.csv, extra_points_<ano>.csv e defense_<ano>.csv vêm hoje de
+extract_player_game_logs.py (substitui os antigos extract_qb_games.py,
+extract_extra_points.py e extract_defense_stats.py), que lê a página de
+Logs jogo-a-jogo de cada jogador e já grava a semana real de cada linha
+— sem inferência nenhuma. As dez entradas de stats_dir ainda vêm das
+páginas de líderes por categoria (extract_category_stats.py), que são
+cumulativas (sem coluna de semana própria); para essas, este script
+ainda usa determine_team_weeks()/team_weeks pra decidir sob qual semana
+gravar o total — ver GAP CONHECIDO abaixo. Migrar essas dez pra uma
+fonte semana-a-semana real (como já foi feito pra games/extra_points/
+defense) é o próximo passo planejado, mas depende de conferir os nomes
+de coluna da página de Logs pra cada uma contra o site ao vivo antes
+(nunca conferidos até agora — ver player_game_logs_raw_<ano>.csv,
+gerado como ponto de partida bônus por extract_player_game_logs.py).
 
 Saídas (em --output-dir): teams_final.csv, players_final.csv, passing_final.csv,
 rushing_final.csv, receiving_final.csv, kicking_final.csv,
@@ -53,6 +68,41 @@ jogador de um time que ainda não jogou continua sendo gravado sob a
 idempotente) até que o jogo dele apareça no log — em vez de criar uma
 linha "semana N" espúria, idêntica à "semana N-1", só porque outro time
 qualquer já jogou a rodada N.
+
+LIMITAÇÃO CONHECIDA / TODO — reexecução do zero NÃO reconstrói o
+histórico semana-a-semana das categorias de líderes: build_passing,
+build_rushing, build_receiving, build_fumbles, build_kick_return,
+build_punt_return, build_punting, a parte field-goals/kickoffs de
+build_kicking, e a parte interceptions de build_defense lêem
+stats_dir/<categoria>_<ano>.csv, gerado por
+extract_category_stats.py a partir das páginas de líderes do nfl.com —
+que só expõem o total acumulado ATÉ O MOMENTO DA REQUISIÇÃO, sem
+histórico por semana (ver docstring de extract_category_stats.py pro
+detalhe). Isso significa que, se o banco for limpo e o pipeline
+reexecutado do zero em QUALQUER momento da temporada, essas tabelas não
+recuperam as semanas já passadas — reconstroem só UMA linha por jogador
+com o total acumulado atual, sob a última semana real do time. O
+resultado do pipeline hoje depende de QUANDO ele foi executado
+originalmente (rodando ao vivo, semana a semana), não é reprodutível a
+partir do zero.
+
+Isso NÃO afeta build_games, nem as colunas de extra_point_* em
+build_kicking, nem build_defense pro lado de tackles/sacks — as três já
+vêm de extract_player_game_logs.py (script consolidado, substitui os
+antigos extract_qb_games.py/extract_extra_points.py/extract_defense_stats.py),
+que lê a página de Logs por jogador (/players/<slug>/stats/logs/<ano>/),
+nativamente semana-a-semana, e sobrevive a uma reexecução do zero sem
+perda — ESTE GAP JÁ FOI CORRIGIDO PRA ESSAS TRÊS (ver seu docstring).
+As colunas de interceptions em build_defense CONTINUAM cumulativas (vêm
+da categoria de líderes Interceptions, não da Logs) — fazem parte do
+mesmo gap ainda em aberto das dez categorias acima.
+
+Correção futura considerada (ainda não implementada): migrar as
+categorias acima da fonte "líderes" (cumulativa) pra essa mesma fonte de
+Logs por jogador, pra que qualquer pessoa rodando o pipeline do zero, em
+qualquer semana, chegue sempre ao mesmo histórico completo — hoje isso
+só é garantido rodando o scraper ao vivo toda semana (ou reaproveitando
+backups do banco / CSVs finais de execuções anteriores).
 
 Uso:
     python transform_stats.py --year 2026 \
@@ -135,13 +185,6 @@ def determine_team_weeks(games_path: Path) -> dict[str, int]:
     if df.empty:
         raise ValueError(f"Não foi possível determinar a semana atual a partir de {games_path}")
     return df.groupby("team_id")["week"].max().astype(int).to_dict()
-
-
-def team_id_from_player_id_team(player_id_team: str) -> str:
-    """Extrai o team_id de um player_id_team (ex: 'patrick-mahomes-KC' ->
-    'KC'). Usado só para CSVs que já chegam nesse formato combinado (extra
-    points, defense) e não trazem team_id como coluna própria."""
-    return player_id_team.rsplit("-", 1)[-1]
 
 
 def attach_player_id_team(df: pd.DataFrame, roster: pd.DataFrame, year: int,
@@ -398,20 +441,14 @@ def build_kicking(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: 
     if extra_points_path.exists():
         xp = pd.read_csv(extra_points_path, dtype=str)
         xp["season"] = pd.to_numeric(xp["season"], errors="coerce").astype("Int64")
-        # extra_points_<ano>.csv só tem player_id_team (sem team_id em
-        # coluna própria) — extrai o time de cada linha pra carimbar com a
-        # semana REAL daquele time, igual attach_player_id_team faz pras
-        # outras fontes (ver determine_team_weeks).
-        xp_team_id = xp["player_id_team"].map(team_id_from_player_id_team)
-        xp["week"] = xp_team_id.map(team_weeks)
-        no_week = xp["week"].isna().sum()
-        if no_week:
-            print(f"  [AVISO] {no_week} kicker(s) de time(s) sem jogo registrado ainda "
-                  f"— linhas de extra point descartadas", file=sys.stderr)
-            xp = xp.dropna(subset=["week"])
-        xp["week"] = xp["week"].astype(int)
+        # A partir de extract_player_game_logs.py, extra_points_<ano>.csv já
+        # traz uma linha por SEMANA REAL (não mais um total da temporada
+        # somado) — o `week` vem direto da própria fonte, sem precisar
+        # inferir via team_weeks. Semanas que ainda não existem em `merged`
+        # (FG/KO, que continuam vindo da fonte cumulativa por enquanto)
+        # simplesmente não casam neste merge — nada a fazer aqui.
         to_num(xp, ["extra_point_pct"])
-        to_int(xp, ["extra_point_attempts", "extra_points_made", "extra_points_blocked"])
+        to_int(xp, ["extra_point_attempts", "extra_points_made", "extra_points_blocked", "week"])
         merged = merged.merge(xp, on=["player_id_team", "season", "week"], how="left")
     else:
         print(f"  [AVISO] {extra_points_path} não encontrado — colunas de "
@@ -451,24 +488,20 @@ def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
     if defense_path.exists():
         defense = pd.read_csv(defense_path, dtype=str)
         defense["season"] = pd.to_numeric(defense["season"], errors="coerce").astype("Int64")
-        # defense_<ano>.csv só tem player_id_team (sem team_id em coluna
-        # própria) — mesmo tratamento do extra_points em build_kicking.
-        defense_team_id = defense["player_id_team"].map(team_id_from_player_id_team)
-        defense["week"] = defense_team_id.map(team_weeks)
-        no_week = defense["week"].isna().sum()
-        if no_week:
-            print(f"  [AVISO] {no_week} jogador(es) defensivo(s) de time(s) sem jogo "
-                  f"registrado ainda — linhas descartadas", file=sys.stderr)
-            defense = defense.dropna(subset=["week"])
-        defense["week"] = defense["week"].astype(int)
-        to_num(defense, ["sacks"])
+        # A partir de extract_player_game_logs.py, defense_<ano>.csv já
+        # traz uma linha por SEMANA REAL (não mais um total da temporada
+        # somado) — o `week` vem direto da própria fonte, sem precisar
+        # inferir via team_weeks.
         to_int(defense, ["combined_tackles", "solo_tackles", "assisted_tackles",
-                          "safeties", "pass_defended"])
+                          "safeties", "pass_defended", "week"])
+        to_num(defense, ["sacks"])
     else:
         print(f"  [AVISO] {defense_path} não encontrado — colunas de tackle ficarão nulas",
               file=sys.stderr)
         defense = pd.DataFrame(columns=["player_id_team", "season", "week"])
 
+    # interceptions ainda vem da fonte cumulativa (categoria de líderes),
+    # então ainda depende de team_weeks (gap conhecido — ver documentação).
     intc = pd.read_csv(stats_dir / f"interceptions_{year}.csv", dtype=str)
     intc = attach_player_id_team(intc, roster, year, team_weeks)
     intc = intc.rename(columns={
