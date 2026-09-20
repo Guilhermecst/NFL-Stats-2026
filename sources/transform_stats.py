@@ -606,13 +606,25 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    games_path = Path(args.games)
+    if not games_path.exists():
+        print(
+            f"[ERRO] {games_path} não existe. Este script depende do CSV de jogos "
+            "gerado por extract_player_game_logs.py (etapa anterior do pipeline) para "
+            "saber a semana de cada time — sem ele não há como continuar. Confira o log "
+            "dessa etapa: se ela reportou \"Zero jogos coletados\", o problema está lá "
+            "(rede, layout do nfl.com mudou, ou roster vazio), não neste script.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     print("Construindo teams (conf_div)...")
     build_teams().to_csv(out_dir / "teams_final.csv", index=False)
 
     print("Carregando roster...")
     roster = load_roster(Path(args.roster))
 
-    team_weeks = determine_team_weeks(Path(args.games))
+    team_weeks = determine_team_weeks(games_path)
     weeks_found = sorted(set(team_weeks.values()))
     if len(weeks_found) > 1:
         behind = sorted(t for t, w in team_weeks.items() if w < weeks_found[-1])
