@@ -1,66 +1,55 @@
 """
 extract_category_stats.py
 
-Fase 2a da extração: obtém as estatísticas ACUMULADAS DA TEMPORADA de todos
-os jogadores, via as páginas de "líderes por categoria" do nfl.com
-(https://www.nfl.com/stats/player-stats/category/<categoria>/<ano>/reg/all/<ordenacao>/desc),
-em vez de visitar a página de cada um dos milhares de jogadores individualmente.
+Fase 2a da extração: obtém as estatísticas ACUMULADAS DA TEMPORADA das
+categorias que ainda não têm outra fonte, via as páginas de "líderes por
+categoria" do nfl.com
+(https://www.nfl.com/stats/player-stats/category/<categoria>/<ano>/reg/all/<ordenacao>/desc).
 
 Cada categoria já retorna TODOS os jogadores com estatística naquela
 categoria na temporada (não só os líderes) — a página pagina via cursor
 opaco (parâmetro `aftercursor`), seguido através do link "Next Page".
 
+ESCOPO REDUZIDO (rodada 2 da migração "extração acumulada" — ver seção 10
+da documentação): passing, rushing, receiving, field-goals, kickoffs e
+punts SAÍRAM deste script — migraram para extract_player_game_logs.py,
+que lê a página de Logs por jogador (semana a semana de verdade, não
+acumulado). Restam aqui só as categorias sem alternativa:
+  - fumbles / interceptions: a página de Logs traz um único par FUM/LOST
+    por linha, sem distinguir corrida de recepção, e não separa
+    interceptions do resto do bloco defensivo do jeito que esta categoria
+    separa — mantidos aqui por decisão original (ver
+    extract_defense_stats.py / extract_player_game_logs.py).
+  - kickoff-returns / punt-returns: a página de Logs NÃO TEM colunas de
+    retorno em lugar nenhum da tabela — confirmado contra a página real
+    de um retornador titular (Deven Thompkins) antes de decidir isso, não
+    é suposição. Continuam presos ao acumulado sem semana até que se
+    encontre outra fonte.
+
 Categoria "Tackles" fica de fora propositalmente: a página está retornando
 "No Stats Available" no nfl.com (bug atual do site, confirmado em 2025 e
 2026 com diferentes critérios de ordenação). As estatísticas de tackles/
-sacks/safeties/pass-defended precisam vir do scraper por jogador
-(extract_defense_stats.py, próxima etapa).
+sacks/safeties/pass-defended vêm do scraper por jogador
+(extract_player_game_logs.py).
 
 Além das categorias de jogador, este script também extrai a tabela
 `downs` (por TIME, temporada inteira, sem paginação — 32 linhas), via
 nfl.com/stats/team-stats/offense/downs/<ano>/reg/all. Essa tabela nunca
-teve extrator (órfã desde o desenho original do banco) — use
+teve extrator próprio (órfã desde o desenho original do banco) — use
 --skip-downs para pular essa parte se só quiser as categorias de jogador.
+`downs` nunca teve o problema de semana: é uma tabela por temporada, sem
+coluna `week`, então o acumulado cumulativo é o dado certo por design.
 
-LIMITAÇÃO CONHECIDA / TODO — fonte cumulativa, sem histórico semanal:
-As páginas de líderes usadas aqui são um SNAPSHOT AO VIVO: sempre
-retornam o total acumulado da temporada ATÉ O MOMENTO DA REQUISIÇÃO, não
-um total "congelado" de uma semana específica. Não existe parâmetro de
-semana nessa URL — depois que a semana N passa, não tem como pedir ao
-nfl.com "como estava o acumulado no fim da semana N"; esse estado já foi
-sobrescrito na própria fonte.
-
-Consequência prática: se o banco for limpo e o pipeline reexecutado do
-zero em qualquer momento da temporada, as tabelas alimentadas por este
-script (passing, rushing, receiving, fumbles, kick_return, punt_return,
-punting, e as partes de field-goals/kickoffs de kicking) NÃO recuperam o
-histórico semana-a-semana já ocorrido — só reconstroem UMA linha por
-jogador, com o total acumulado atual, carimbada com a última semana real
-de cada time. O breakdown "quanto ele tinha exatamente até a semana 1,
-até a semana 2, etc." se perde, porque a fonte nunca guardou isso — só o
-scraper rodando AO VIVO, semana a semana, é que capturava cada ponto no
-tempo.
-
-Isso é diferente de extract_qb_games.py / extract_extra_points.py /
-extract_defense_stats.py, que usam a página de Logs por jogador
-(/players/<slug>/stats/logs/<ano>/) — essa página já é NATIVAMENTE
-semana-a-semana (uma linha por WK), então reexecutar do zero a qualquer
-momento reconstrói o histórico completo sem perda.
-
-Correção futura considerada (ainda não implementada): migrar as
-categorias deste script para a mesma fonte de Logs por jogador (que já
-traz, numa única página por atleta, passing/rushing/receiving/etc.
-conforme a posição), em vez das páginas de líderes cumulativas. Isso
-tornaria o resultado do pipeline independente de QUANDO ele é executado
-— qualquer pessoa rodando do zero, em qualquer semana, chegaria ao mesmo
-histórico completo. É uma reescrita de escopo maior (troca ~10
-requisições de categoria por ~1 requisição por jogador do roster, escala
-parecida com a que extract_defense_stats.py já usa hoje só pra
-defensivos), por isso foi adiada — mas é a única forma de eliminar essa
-limitação por completo. Enquanto isso não é feito, evite depender de
-"zerar e reprocessar do zero" para recuperar estatísticas semanais
-passadas: a única fonte confiável pra isso é backup do banco ou os CSVs
-finais (final_<ano>/*.csv) já gerados em execuções anteriores.
+LIMITAÇÃO QUE PERSISTE NAS 4 CATEGORIAS RESTANTES: são um SNAPSHOT AO
+VIVO — sempre retornam o total acumulado da temporada até o momento da
+requisição, sem parâmetro de semana na URL. Se o banco for limpo e o
+pipeline reexecutado do zero, fumbles/interceptions/kickoff-returns/
+punt-returns não recuperam o histórico semana-a-semana já ocorrido — só
+uma linha por jogador com o acumulado atual, carimbada com a última
+semana real do time (via team_weeks em transform_stats.py). A única
+forma de recuperar o histórico dessas 4 categorias depois do fato é
+backup do banco ou os CSVs finais (final_<ano>/*.csv) de execuções
+passadas.
 
 Saída: um CSV por categoria em --output-dir, com colunas =
 [player_id, player_name] + as colunas exibidas na tabela (nomes
@@ -92,17 +81,21 @@ BASE_URL = "https://www.nfl.com/stats/player-stats/category"
 # categoria (slug da URL) -> critério de ordenação padrão (necessário na URL,
 # mas não afeta quais jogadores aparecem, só a ordem)
 CATEGORIES = {
-    "passing": "passingyards",
-    "rushing": "rushingyards",
-    "receiving": "receivingreceptions",
     "fumbles": "defensiveforcedfumble",
     "interceptions": "defensiveinterceptions",
-    "field-goals": "kickingfgmade",
-    "kickoffs": "kickofftotal",
     "kickoff-returns": "kickreturnsaverageyards",
-    "punts": "puntingaverageyards",
     "punt-returns": "puntreturnsaverageyards",
     # "tackles" fica de fora: página quebrada no nfl.com no momento
+    #
+    # passing, rushing, receiving, field-goals, kickoffs e punts SAÍRAM
+    # daqui (migradas para extract_player_game_logs.py, que lê a página de
+    # Logs por jogador — semana a semana de verdade). fumbles e
+    # interceptions continuam aqui porque a página de Logs não separa
+    # fumble de corrida vs recepção; kickoff-returns e punt-returns
+    # continuam aqui porque a página de Logs NÃO TEM colunas de retorno em
+    # lugar nenhum — nem para um retornador de verdade (confirmado contra
+    # a página real de um retornador titular antes dessa decisão). Ver
+    # docstring do módulo e de extract_player_game_logs.py.
 }
 
 PLAYER_URL_RE = re.compile(r"/players/([a-z0-9\-]+)/?$")

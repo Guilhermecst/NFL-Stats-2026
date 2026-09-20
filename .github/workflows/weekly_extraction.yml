@@ -34,11 +34,11 @@ jobs:
         working-directory: sources
         run: python extract_players_roster.py --output players_roster.csv
 
-      - name: 2. Extrair categorias de líderes (cumulativo — ver seção 10 da documentação)
+      - name: 2. Extrair categorias de líderes restantes (fumbles/interceptions/returns/downs — cumulativo, ver seção 10)
         working-directory: sources
         run: python extract_category_stats.py --year ${{ env.SEASON_YEAR }} --output-dir stats_${{ env.SEASON_YEAR }}
 
-      - name: 3. Extrair logs por jogador (games + extra points + defense, semana a semana)
+      - name: 3. Extrair logs por jogador (games, passing, rushing, receiving, kicking, punting, extra points, defense — semana a semana)
         working-directory: sources
         run: |
           python extract_player_game_logs.py \
@@ -52,9 +52,7 @@ jobs:
           python transform_stats.py --year ${{ env.SEASON_YEAR }} \
             --roster players_roster.csv \
             --stats-dir stats_${{ env.SEASON_YEAR }} \
-            --games logs_${{ env.SEASON_YEAR }}/games_${{ env.SEASON_YEAR }}.csv \
-            --extra-points logs_${{ env.SEASON_YEAR }}/extra_points_${{ env.SEASON_YEAR }}.csv \
-            --defense logs_${{ env.SEASON_YEAR }}/defense_${{ env.SEASON_YEAR }}.csv \
+            --logs-dir logs_${{ env.SEASON_YEAR }} \
             --output-dir final_${{ env.SEASON_YEAR }}
 
       - name: 5. Carregar no Supabase (upsert)
