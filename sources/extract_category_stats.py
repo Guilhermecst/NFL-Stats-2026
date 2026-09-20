@@ -274,6 +274,7 @@ def main():
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
 
+    empty_categories = []
     for category in args.categories:
         if category not in CATEGORIES:
             print(f"[AVISO] categoria desconhecida: {category}", file=sys.stderr)
@@ -284,6 +285,8 @@ def main():
         out_path = out_dir / f"{category.replace('-', '_')}_{args.year}.csv"
         write_csv(rows, out_path)
         print(f"  -> {len(rows)} jogadores salvos em {out_path}")
+        if not rows:
+            empty_categories.append(category)
         time.sleep(args.delay)
 
     if not args.skip_downs:
@@ -292,6 +295,22 @@ def main():
         downs_path = out_dir / f"downs_{args.year}.csv"
         write_csv(downs_rows, downs_path)
         print(f"  -> {len(downs_rows)} times salvos em {downs_path}")
+        if not downs_rows:
+            empty_categories.append("downs")
+
+    if empty_categories:
+        print(
+            f"\n[AVISO] {len(empty_categories)} categoria(s) vieram com ZERO linhas nesta "
+            f"execução: {empty_categories}. O CSV correspondente NÃO foi gravado — "
+            "transform_stats.py trata isso como \"arquivo ausente\" e zera as colunas "
+            "daquela categoria (não quebra mais o pipeline), mas os dados dessa "
+            "categoria ficam faltando no banco até a próxima execução em que ela voltar "
+            "a responder. Se for sempre a mesma categoria falhando, é provavelmente o "
+            "mesmo tipo de bug já documentado pra 'Tackles' (página retornando "
+            "'No Stats Available' no nfl.com) — vale conferir a URL da categoria "
+            "manualmente no navegador.",
+            file=sys.stderr,
+        )
 
     print("\nConcluído.")
 

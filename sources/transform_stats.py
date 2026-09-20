@@ -334,7 +334,17 @@ def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int, team_wee
     a página de Logs não tem colunas de kick return em lugar nenhum,
     confirmado contra a página de um retornador titular. Continua
     cumulativo, carimbado via team_weeks."""
-    df = pd.read_csv(stats_dir / f"kickoff_returns_{year}.csv", dtype=str)
+    cols = ["player_id_team", "season", "week", "returns", "yards", "average", "touchdowns",
+            "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
+            "fumbles"]
+    path = stats_dir / f"kickoff_returns_{year}.csv"
+    if not path.exists():
+        print(f"  [AVISO] {path} não encontrado (categoria veio vazia nesta execução? "
+              f"ver log de extract_category_stats.py) — kick_return ficará vazio",
+              file=sys.stderr)
+        return pd.DataFrame(columns=cols)
+
+    df = pd.read_csv(path, dtype=str)
     df = attach_player_id_team(df, roster, year, team_weeks)
     df = df.rename(columns={
         "avg": "average", "ret": "returns", "yds": "yards", "kret_td": "touchdowns",
@@ -344,15 +354,22 @@ def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int, team_wee
     to_num(df, ["average"])
     to_int(df, ["returns", "yards", "touchdowns", "returns_20_yards_plus",
                 "returns_40_yards_plus", "long_gain", "fair_catches", "fumbles"])
-    cols = ["player_id_team", "season", "week", "returns", "yards", "average", "touchdowns",
-            "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
-            "fumbles"]
     return df[cols]
 
 
 def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
     """NÃO migrado — mesmo motivo de build_kick_return."""
-    df = pd.read_csv(stats_dir / f"punt_returns_{year}.csv", dtype=str)
+    cols = ["player_id_team", "season", "week", "returns", "yards", "average", "touchdowns",
+            "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
+            "fumbles"]
+    path = stats_dir / f"punt_returns_{year}.csv"
+    if not path.exists():
+        print(f"  [AVISO] {path} não encontrado (categoria veio vazia nesta execução? "
+              f"ver log de extract_category_stats.py) — punt_return ficará vazio",
+              file=sys.stderr)
+        return pd.DataFrame(columns=cols)
+
+    df = pd.read_csv(path, dtype=str)
     df = attach_player_id_team(df, roster, year, team_weeks)
     # ATENÇÃO: mapeamento assumido igual ao de Kickoff Returns — ainda não
     # conferido coluna a coluna contra a extração real. Ajustar se os nomes
@@ -370,9 +387,6 @@ def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int, team_wee
     to_num(df, ["average"])
     to_int(df, ["returns", "yards", "touchdowns", "returns_20_yards_plus",
                 "returns_40_yards_plus", "long_gain", "fair_catches", "fumbles"])
-    cols = ["player_id_team", "season", "week", "returns", "yards", "average", "touchdowns",
-            "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
-            "fumbles"]
     return df[[c for c in cols if c in df.columns]]
 
 
@@ -503,18 +517,26 @@ def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
 
     # interceptions ainda vem da fonte cumulativa (categoria de líderes),
     # então ainda depende de team_weeks (gap conhecido — ver documentação).
-    intc = pd.read_csv(stats_dir / f"interceptions_{year}.csv", dtype=str)
-    intc = attach_player_id_team(intc, roster, year, team_weeks)
-    intc = intc.rename(columns={
-        "int": "interceptions", "int_td": "interception_touchdowns",
-        "int_yds": "interception_yards", "lng": "interception_long",
-    })
-    to_int(intc, ["interceptions", "interception_touchdowns", "interception_yards",
-                  "interception_long"])
+    intc_path = stats_dir / f"interceptions_{year}.csv"
     intc_cols = ["player_id_team", "season", "week", "interceptions", "interception_touchdowns",
                  "interception_yards", "interception_long"]
+    if intc_path.exists():
+        intc = pd.read_csv(intc_path, dtype=str)
+        intc = attach_player_id_team(intc, roster, year, team_weeks)
+        intc = intc.rename(columns={
+            "int": "interceptions", "int_td": "interception_touchdowns",
+            "int_yds": "interception_yards", "lng": "interception_long",
+        })
+        to_int(intc, ["interceptions", "interception_touchdowns", "interception_yards",
+                      "interception_long"])
+        intc = intc[intc_cols]
+    else:
+        print(f"  [AVISO] {intc_path} não encontrado (categoria veio vazia nesta execução? "
+              f"ver log de extract_category_stats.py) — colunas de interception ficarão zeradas",
+              file=sys.stderr)
+        intc = pd.DataFrame(columns=intc_cols)
 
-    merged = defense.merge(intc[intc_cols], on=["player_id_team", "season", "week"], how="outer")
+    merged = defense.merge(intc, on=["player_id_team", "season", "week"], how="outer")
 
     # o merge "outer" introduz NaN nas colunas de um lado quando o jogador só
     # existe no outro (ex: tem tackle mas nunca interceptou) — isso faz o
@@ -534,16 +556,24 @@ def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
 
 def build_fumbles(stats_dir: Path, rushing: pd.DataFrame, receiving: pd.DataFrame,
                    roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
-    df = pd.read_csv(stats_dir / f"fumbles_{year}.csv", dtype=str)
-    df = attach_player_id_team(df, roster, year, team_weeks)
-    df = df.rename(columns={
-        "ff": "forced_fumbles", "fr": "opponent_fumbles_recovered",
-        "fr_td": "opponent_fumble_recovery_touchdowns",
-    })
-    to_num(df, ["forced_fumbles", "opponent_fumbles_recovered",
-                "opponent_fumble_recovery_touchdowns"])
-    df = df[["player_id_team", "season", "week", "forced_fumbles", "opponent_fumbles_recovered",
-             "opponent_fumble_recovery_touchdowns"]]
+    fumbles_path = stats_dir / f"fumbles_{year}.csv"
+    df_cols = ["player_id_team", "season", "week", "forced_fumbles", "opponent_fumbles_recovered",
+               "opponent_fumble_recovery_touchdowns"]
+    if fumbles_path.exists():
+        df = pd.read_csv(fumbles_path, dtype=str)
+        df = attach_player_id_team(df, roster, year, team_weeks)
+        df = df.rename(columns={
+            "ff": "forced_fumbles", "fr": "opponent_fumbles_recovered",
+            "fr_td": "opponent_fumble_recovery_touchdowns",
+        })
+        to_num(df, ["forced_fumbles", "opponent_fumbles_recovered",
+                    "opponent_fumble_recovery_touchdowns"])
+        df = df[df_cols]
+    else:
+        print(f"  [AVISO] {fumbles_path} não encontrado (categoria veio vazia nesta execução? "
+              f"ver log de extract_category_stats.py) — forced_fumbles/opponent_* ficarão zerados",
+              file=sys.stderr)
+        df = pd.DataFrame(columns=df_cols)
 
     own = rushing[["player_id_team", "season", "week", "fumbles"]].rename(columns={"fumbles": "rush_fum"})
     own = own.merge(
