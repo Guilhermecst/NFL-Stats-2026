@@ -2,7 +2,8 @@
 load_to_supabase.py
 
 Fase 4 do pipeline: faz upsert (INSERT ... ON CONFLICT DO UPDATE) dos CSVs
-finais (gerados por transform_stats.py) nas tabelas do Supabase.
+finais (gerados por transform_stats.py) nas tabelas do Supabase. Exceção:
+`teams` usa um UPDATE puro, não upsert — ver comentário em TABLES.
 
 IMPORTANTE: é upsert, não insert puro. Toda semana os jogadores acumulam
 mais estatísticas (jogos, jardas, etc.) e os números MUDAM — não são
@@ -47,24 +48,29 @@ try:
 except ImportError:
     pass  # python-dotenv é opcional; em produção (GitHub Actions) a env var já vem pronta
 
-# (nome_da_tabela, arquivo_csv, colunas_da_chave_primaria)
+# (nome_da_tabela, arquivo_csv, colunas_da_chave_primaria, update_only)
 # `teams` vem primeiro: só carrega `conf_div` (ex: "NFC East") por cima das
 # linhas já existentes (seed) — a chave primária é só team_id (não varia
 # por temporada). Precisa vir antes de `games`, que tem FK para `teams`.
+# `update_only=True` faz um UPDATE puro (sem INSERT ... ON CONFLICT): o CSV
+# de teams só tem team_id + conf_div, então um INSERT de linha nova
+# quebraria as colunas NOT NULL da tabela (team_name, etc.) que não vêm
+# desta fonte — a linha do time tem que já existir via seed. Se ainda não
+# existir, o UPDATE simplesmente não afeta nenhuma linha (0), sem erro.
 TABLES = [
-    ("teams", "teams_final.csv", ["team_id"]),
-    ("players", "players_final.csv", ["player_id_team", "season"]),
-    ("passing", "passing_final.csv", ["player_id_team", "season", "week"]),
-    ("rushing", "rushing_final.csv", ["player_id_team", "season", "week"]),
-    ("receiving", "receiving_final.csv", ["player_id_team", "season", "week"]),
-    ("kicking", "kicking_final.csv", ["player_id_team", "season", "week"]),
-    ("kick_return", "kick_return_final.csv", ["player_id_team", "season", "week"]),
-    ("punt_return", "punt_return_final.csv", ["player_id_team", "season", "week"]),
-    ("punting", "punting_final.csv", ["player_id_team", "season", "week"]),
-    ("defense", "defense_final.csv", ["player_id_team", "season", "week"]),
-    ("fumbles", "fumbles_final.csv", ["player_id_team", "season", "week"]),
-    ("games", "games_final.csv", ["team_id", "season", "week"]),
-    ("downs", "downs_final.csv", ["team_id", "season"]),
+    ("teams", "teams_final.csv", ["team_id"], True),
+    ("players", "players_final.csv", ["player_id_team", "season"], False),
+    ("passing", "passing_final.csv", ["player_id_team", "season", "week"], False),
+    ("rushing", "rushing_final.csv", ["player_id_team", "season", "week"], False),
+    ("receiving", "receiving_final.csv", ["player_id_team", "season", "week"], False),
+    ("kicking", "kicking_final.csv", ["player_id_team", "season", "week"], False),
+    ("kick_return", "kick_return_final.csv", ["player_id_team", "season", "week"], False),
+    ("punt_return", "punt_return_final.csv", ["player_id_team", "season", "week"], False),
+    ("punting", "punting_final.csv", ["player_id_team", "season", "week"], False),
+    ("defense", "defense_final.csv", ["player_id_team", "season", "week"], False),
+    ("fumbles", "fumbles_final.csv", ["player_id_team", "season", "week"], False),
+    ("games", "games_final.csv", ["team_id", "season", "week"], False),
+    ("downs", "downs_final.csv", ["team_id", "season"], False),
 ]
 
 SCHEMA = "nfl"
@@ -81,7 +87,7 @@ def read_csv_rows(path: Path):
     return columns, rows
 
 
-def upsert_table(conn, table: str, csv_path: Path, pk_columns: list[str]):
+def upsert_table(conn, table: str, csv_path: Path, pk_columns: list[str], update_only: bool = False):
     if not csv_path.exists():
         print(f"  [AVISO] {csv_path} não encontrado, pulando tabela {table}", file=sys.stderr)
         return 0
@@ -102,6 +108,41 @@ def upsert_table(conn, table: str, csv_path: Path, pk_columns: list[str]):
         )
 
     update_columns = [c for c in columns if c not in pk_columns]
+
+    if update_only:
+        # UPDATE puro via VALUES: nunca insere linha nova. Usado para CSVs
+        # "parciais" (como teams_final.csv, que só tem team_id + conf_div)
+        # que não têm dados suficientes pra satisfazer as colunas NOT NULL
+        # de um INSERT — a linha-alvo precisa já existir (via seed). Se não
+        # existir, a linha do CSV simplesmente não casa com nada e não
+        # afeta nenhuma linha (sem erro).
+        if not update_columns:
+            print(f"  [AVISO] {table} não tem colunas além da chave primária, nada a atualizar",
+                  file=sys.stderr)
+            return 0
+
+        col_list = ", ".join(columns)  # ordem das colunas no VALUES, sem aspas (alias)
+        set_clause = ", ".join(f'"{c}" = data."{c}"' for c in update_columns)
+        where_clause = " AND ".join(f'{table}."{c}" = data."{c}"' for c in pk_columns)
+        extra_updated_at = ', "updated_at" = now()' if "updated_at" not in columns else ""
+
+        query = (
+            f'UPDATE {SCHEMA}."{table}" SET {set_clause}{extra_updated_at} '
+            f'FROM (VALUES %s) AS data({col_list}) '
+            f'WHERE {where_clause}'
+        )
+
+        with conn.cursor() as cur:
+            execute_values(cur, query, rows, page_size=500)
+            affected = cur.rowcount
+        conn.commit()
+
+        if affected < len(rows):
+            print(f"  [AVISO] {len(rows) - affected} linha(s) de {csv_path.name} não "
+                  f"encontraram uma linha correspondente em {table} (ainda não existe? "
+                  f"rode o seed primeiro)", file=sys.stderr)
+
+        return affected
 
     col_list = ", ".join(f'"{c}"' for c in columns)
     pk_list = ", ".join(f'"{c}"' for c in pk_columns)
@@ -146,10 +187,11 @@ def main():
 
     conn = psycopg2.connect(args.conn_string)
     try:
-        for table, filename, pk_columns in TABLES:
+        for table, filename, pk_columns, update_only in TABLES:
             csv_path = final_dir / filename
-            print(f"Upsert em {SCHEMA}.{table} <- {filename} ...")
-            count = upsert_table(conn, table, csv_path, pk_columns)
+            verbo = "Update" if update_only else "Upsert"
+            print(f"{verbo} em {SCHEMA}.{table} <- {filename} ...")
+            count = upsert_table(conn, table, csv_path, pk_columns, update_only)
             print(f"  -> {count} linhas processadas")
     finally:
         conn.close()
