@@ -13,6 +13,13 @@ Por que essa abordagem em vez de paginar o índice alfabético de jogadores:
   - Total: 32 requisições por execução (uma por time), bem mais leve
     que varrer o índice alfabético completo de jogadores.
 
+Cada coluna (No, Pos, Status, Height, Weight, Exp, College) é localizada
+pelo texto do cabeçalho da tabela, não por uma posição fixa — o mesmo
+método usado nos demais extratores do pipeline. Isso protege contra o
+nfl.com reordenar, remover ou renomear colunas da tabela de roster: uma
+coluna cujo cabeçalho não é reconhecido fica vazia (com aviso no log) em
+vez de fazer outra coluna ler o valor errado.
+
 Saída: um CSV com uma linha por jogador (player_id = slug da URL,
 player_name, team_id, position, status, height, weight, experience,
 college), pronto para popular/atualizar a tabela `players` no Supabase.
@@ -54,6 +61,18 @@ TEAM_SLUGS = {
 
 PLAYER_URL_RE = re.compile(r"/players/([a-z0-9\-]+)/?$")
 
+# campo do PlayerRow -> possíveis textos de cabeçalho (minúsculo) que o
+# identificam na tabela de roster; o primeiro que bater é usado.
+ROSTER_COLUMN_CANDIDATES = {
+    "jersey_number": ["no", "no.", "#"],
+    "position": ["pos", "position"],
+    "status": ["status"],
+    "height_in": ["height", "ht"],
+    "weight_lb": ["weight", "wt"],
+    "experience": ["exp", "experience"],
+    "college": ["college"],
+}
+
 
 @dataclass
 class PlayerRow:
@@ -67,6 +86,20 @@ class PlayerRow:
     weight_lb: Optional[str]
     experience: Optional[str]
     college: Optional[str]
+
+
+def locate_roster_columns(header_cells: list[str]) -> dict[str, int]:
+    """Recebe o texto (já em minúsculo) de cada <th> do cabeçalho da tabela
+    de roster e retorna, por campo do PlayerRow, o índice da coluna
+    correspondente. Um campo cujo cabeçalho não é reconhecido simplesmente
+    não aparece no dict retornado."""
+    col_idx: dict[str, int] = {}
+    for field, candidates in ROSTER_COLUMN_CANDIDATES.items():
+        for candidate in candidates:
+            if candidate in header_cells:
+                col_idx[field] = header_cells.index(candidate)
+                break
+    return col_idx
 
 
 def fetch_team_roster(team_id: str, slug: str, session: requests.Session) -> list[PlayerRow]:
@@ -88,6 +121,15 @@ def fetch_team_roster(team_id: str, slug: str, session: requests.Session) -> lis
         print(f"[AVISO] Nenhuma tabela de roster reconhecida para {team_id} ({url})", file=sys.stderr)
         return rows
 
+    header_cells = [th.get_text(strip=True).lower() for th in table.find("thead").find_all("th")] \
+        if table.find("thead") else []
+    col_idx = locate_roster_columns(header_cells)
+
+    missing_fields = [f for f in ROSTER_COLUMN_CANDIDATES if f not in col_idx]
+    if missing_fields:
+        print(f"[AVISO] colunas não reconhecidas no cabeçalho do roster de {team_id} "
+              f"({url}): {missing_fields} — ficarão vazias nesta execução", file=sys.stderr)
+
     for tr in table.find("tbody").find_all("tr"):
         cells = tr.find_all("td")
         if not cells:
@@ -101,21 +143,21 @@ def fetch_team_roster(team_id: str, slug: str, session: requests.Session) -> lis
         player_id = m.group(1)
         player_name = link.get_text(strip=True)
 
-        # Ordem esperada das colunas: Player | No | Pos | Status | Height | Weight | Experience | College
-        def cell_text(i):
-            return cells[i].get_text(strip=True) if i < len(cells) else None
+        def cell_text(field: str) -> Optional[str]:
+            i = col_idx.get(field)
+            return cells[i].get_text(strip=True) if i is not None and i < len(cells) else None
 
         rows.append(PlayerRow(
             player_id=player_id,
             player_name=player_name,
             team_id=team_id,
-            jersey_number=cell_text(1),
-            position=cell_text(2),
-            status=cell_text(3),
-            height_in=cell_text(4),
-            weight_lb=cell_text(5),
-            experience=cell_text(6),
-            college=cell_text(7),
+            jersey_number=cell_text("jersey_number"),
+            position=cell_text("position"),
+            status=cell_text("status"),
+            height_in=cell_text("height_in"),
+            weight_lb=cell_text("weight_lb"),
+            experience=cell_text("experience"),
+            college=cell_text("college"),
         ))
 
     return rows

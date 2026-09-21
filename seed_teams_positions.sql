@@ -1,0 +1,71 @@
+-- =====================================================================
+-- SEED - Tabelas de referência Teams e Positions (dados estáticos)
+-- =====================================================================
+set search_path to nfl, public;
+
+insert into nfl.teams (team_id, team_name, conference, division, logo_team_url, logo_conference_url, team_color_hex) values
+    ('BUF', 'Buffalo Bills', 'AFC', 'East', 'https://a.espncdn.com/i/teamlogos/nfl/500/buf.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#00338D'),
+    ('MIA', 'Miami Dolphins', 'AFC', 'East', 'https://a.espncdn.com/i/teamlogos/nfl/500/mia.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#008E97'),
+    ('NE', 'New England Patriots', 'AFC', 'East', 'https://a.espncdn.com/i/teamlogos/nfl/500/ne.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#C60C30'),
+    ('NYJ', 'New York Jets', 'AFC', 'East', 'https://a.espncdn.com/i/teamlogos/nfl/500/nyj.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#125740'),
+    ('BAL', 'Baltimore Ravens', 'AFC', 'North', 'https://a.espncdn.com/i/teamlogos/nfl/500/bal.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#241773'),
+    ('CIN', 'Cincinnati Bengals', 'AFC', 'North', 'https://a.espncdn.com/i/teamlogos/nfl/500/cin.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#FB4F14'),
+    ('CLE', 'Cleveland Browns', 'AFC', 'North', 'https://a.espncdn.com/i/teamlogos/nfl/500/cle.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#311D00'),
+    ('PIT', 'Pittsburgh Steelers', 'AFC', 'North', 'https://a.espncdn.com/i/teamlogos/nfl/500/pit.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#FFB612'),
+    ('HOU', 'Houston Texans', 'AFC', 'South', 'https://a.espncdn.com/i/teamlogos/nfl/500/hou.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#A71930'),
+    ('IND', 'Indianapolis Colts', 'AFC', 'South', 'https://a.espncdn.com/i/teamlogos/nfl/500/ind.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#002C5F'),
+    ('JAX', 'Jacksonville Jaguars', 'AFC', 'South', 'https://a.espncdn.com/i/teamlogos/nfl/500/jax.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#006778'),
+    ('TEN', 'Tennessee Titans', 'AFC', 'South', 'https://a.espncdn.com/i/teamlogos/nfl/500/ten.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#4B92DB'),
+    ('DEN', 'Denver Broncos', 'AFC', 'West', 'https://a.espncdn.com/i/teamlogos/nfl/500/den.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#FB4F14'),
+    ('KC', 'Kansas City Chiefs', 'AFC', 'West', 'https://a.espncdn.com/i/teamlogos/nfl/500/kc.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#E31837'),
+    ('LV', 'Las Vegas Raiders', 'AFC', 'West', 'https://a.espncdn.com/i/teamlogos/nfl/500/lv.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#A5ACAF'),
+    ('LAC', 'Los Angeles Chargers', 'AFC', 'West', 'https://a.espncdn.com/i/teamlogos/nfl/500/lac.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/afc.png', '#0073CF'),
+    ('DAL', 'Dallas Cowboys', 'NFC', 'East', 'https://a.espncdn.com/i/teamlogos/nfl/500/dal.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#003594'),
+    ('NYG', 'New York Giants', 'NFC', 'East', 'https://a.espncdn.com/i/teamlogos/nfl/500/nyg.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#0B2265'),
+    ('PHI', 'Philadelphia Eagles', 'NFC', 'East', 'https://a.espncdn.com/i/teamlogos/nfl/500/phi.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#004C54'),
+    ('WAS', 'Washington Commanders', 'NFC', 'East', 'https://a.espncdn.com/i/teamlogos/nfl/500/was.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#773141'),
+    ('CHI', 'Chicago Bears', 'NFC', 'North', 'https://a.espncdn.com/i/teamlogos/nfl/500/chi.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#0B162A'),
+    ('DET', 'Detroit Lions', 'NFC', 'North', 'https://a.espncdn.com/i/teamlogos/nfl/500/det.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#0076B6'),
+    ('GB', 'Green Bay Packers', 'NFC', 'North', 'https://a.espncdn.com/i/teamlogos/nfl/500/gb.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#203731'),
+    ('MIN', 'Minnesota Vikings', 'NFC', 'North', 'https://a.espncdn.com/i/teamlogos/nfl/500/min.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#4F2683'),
+    ('ATL', 'Atlanta Falcons', 'NFC', 'South', 'https://a.espncdn.com/i/teamlogos/nfl/500/atl.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#A71930'),
+    ('CAR', 'Carolina Panthers', 'NFC', 'South', 'https://a.espncdn.com/i/teamlogos/nfl/500/car.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#0085CA'),
+    ('NO', 'New Orleans Saints', 'NFC', 'South', 'https://a.espncdn.com/i/teamlogos/nfl/500/no.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#D3BC8D'),
+    ('TB', 'Tampa Bay Buccaneers', 'NFC', 'South', 'https://a.espncdn.com/i/teamlogos/nfl/500/tb.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#D50A0A'),
+    ('ARI', 'Arizona Cardinals', 'NFC', 'West', 'https://a.espncdn.com/i/teamlogos/nfl/500/ari.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#97233F'),
+    ('LAR', 'Los Angeles Rams', 'NFC', 'West', 'https://a.espncdn.com/i/teamlogos/nfl/500/lar.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#003594'),
+    ('SF', 'San Francisco 49ers', 'NFC', 'West', 'https://a.espncdn.com/i/teamlogos/nfl/500/sf.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#AA0000'),
+    ('SEA', 'Seattle Seahawks', 'NFC', 'West', 'https://a.espncdn.com/i/teamlogos/nfl/500/sea.png', 'https://a.espncdn.com/i/teamlogos/nfl/500/nfc.png', '#002244')
+on conflict (team_id) do update set
+    team_name = excluded.team_name,
+    conference = excluded.conference,
+    division = excluded.division,
+    logo_team_url = excluded.logo_team_url,
+    logo_conference_url = excluded.logo_conference_url,
+    team_color_hex = excluded.team_color_hex,
+    updated_at = now();
+
+insert into nfl.positions (player_position, category) values
+    ('QB', 'Offense'),
+    ('WR', 'Offense'),
+    ('TE', 'Offense'),
+    ('RB', 'Offense'),
+    ('FB', 'Offense'),
+    ('OT', 'Offense'),
+    ('G', 'Offense'),
+    ('C', 'Offense'),
+    ('DB', 'Defense'),
+    ('FS', 'Defense'),
+    ('CB', 'Defense'),
+    ('S', 'Defense'),
+    ('LB', 'Defense'),
+    ('DE', 'Defense'),
+    ('OLB', 'Defense'),
+    ('MLB', 'Defense'),
+    ('ILB', 'Defense'),
+    ('DT', 'Defense'),
+    ('NT', 'Defense'),
+    ('P', 'Special Team'),
+    ('K', 'Special Team'),
+    ('LS', 'Special Team')
+on conflict (player_position) do update set category = excluded.category;
