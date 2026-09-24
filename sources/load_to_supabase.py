@@ -17,8 +17,8 @@ Ordem de carga (respeita as FKs do DDL):
                               time já existe via seed — demais colunas de
                               `teams` não são tocadas por este upsert)
     2. players             (referenciada por todas as tabelas individuais)
-    3. passing, rushing, receiving, kicking, kick_return, punt_return,
-       punting, defense, fumbles   (FK -> players)
+    3. passing, rushing, receiving, kicking, punting, defense, fumbles
+       (FK -> players)
     4. games                (FK -> teams, que já foi populada pelo seed)
 
 Conexão: string de conexão do Postgres do Supabase, via variável de
@@ -64,8 +64,6 @@ TABLES = [
     ("rushing", "rushing_final.csv", ["player_id_team", "season", "week"], False),
     ("receiving", "receiving_final.csv", ["player_id_team", "season", "week"], False),
     ("kicking", "kicking_final.csv", ["player_id_team", "season", "week"], False),
-    ("kick_return", "kick_return_final.csv", ["player_id_team", "season", "week"], False),
-    ("punt_return", "punt_return_final.csv", ["player_id_team", "season", "week"], False),
     ("punting", "punting_final.csv", ["player_id_team", "season", "week"], False),
     ("defense", "defense_final.csv", ["player_id_team", "season", "week"], False),
     ("fumbles", "fumbles_final.csv", ["player_id_team", "season", "week"], False),

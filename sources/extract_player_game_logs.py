@@ -1,69 +1,41 @@
 """
 extract_player_game_logs.py
 
-Fase 2 (consolidada) da extração: visita, uma vez por jogador, a página de
-Logs da temporada (nfl.com/players/<slug>/stats/logs/<ano>/) e extrai TUDO
-que essa página oferece semana a semana — não mais só games/extra_points/
-defense (como na primeira versão deste script), mas também passing,
-rushing, receiving, kicking (field goals + kickoffs) e punting.
+Visita, uma vez por jogador, a página de Logs da temporada
+(nfl.com/players/<slug>/stats/logs/<ano>/) e extrai as estatísticas
+semana a semana: jogos, passing, rushing, receiving, kicking (field goals
++ kickoffs), punting, extra points e defense (tackles, interceptions,
+fumbles forçados/recuperados).
 
-POR QUE ISSO MUDOU DE NOVO (rodada 2 da migração "extração acumulada" —
-ver seção 10 da documentação): a primeira versão deste script fechou o
-gap de games/extra_points/defense, mas deixou passing/rushing/receiving/
-field-goals/kickoffs/punts/punt-returns/kickoff-returns presos na página
-de líderes por categoria (extract_category_stats.py), que só expõe o
-acumulado da temporada até agora — perdendo o histórico semana a semana
-sempre que o banco é reconstruído do zero. Esta rodada fecha esse gap
-para as categorias onde a página de Logs realmente carrega a informação.
+A página lista uma tabela por jogador com uma linha por semana realmente
+disputada (semanas de bye ficam ausentes), sem paginação. As colunas
+variam de bloco em bloco conforme a posição do jogador: um QB tem um
+bloco de passing seguido de um de rushing; um RB/WR/TE tem rushing e/ou
+receiving; um kicker tem field goals e kickoffs; um punter tem punting;
+um jogador defensivo tem o bloco de tackles/interceptions/fumbles. Vários
+desses blocos reaproveitam os mesmos nomes de coluna (Att, Yds, TD
+aparecem em mais de um bloco), então locate_blocks() localiza cada bloco
+pela posição relativa dentro do cabeçalho, não por um nome isolado.
 
-COMO OS NOMES DE COLUNA FORAM CONFIRMADOS: ao contrário da rodada 1 (que
-só tinha WK/OPP/RESULT/XP/tackles já validados por scripts anteriores),
-desta vez os nomes de coluna de passing/rushing/receiving/kicking/punting
-foram conferidos contra páginas reais do nfl.com (Josh Allen, Saquon
-Barkley, Justin Jefferson, Brandon Aubrey, e o mirror do log de punter em
-atlantafalcons.com, que usa o mesmo backend de dados do nfl.com) antes de
-escrever este script — não foram adivinhados. Mesmo assim, a extração de
-produção é a prova final: se o primeiro run real mostrar contagens de
-[AVISO] muito altas para alguma posição, o formato da tabela pode ter
-mudado desde essa conferência.
-
-LIMITAÇÃO REAL DA FONTE — NÃO É POSSÍVEL FECHAR TODO O GAP: a página de
-Logs, mesmo para um retornador de verdade (testado: Deven Thompkins, que
-tem produção real de kick return), simplesmente NÃO tem colunas de kick
-return / punt return em lugar nenhum da tabela. Isso não é uma omissão
-deste script — é uma ausência na própria página do nfl.com. kick_return e
-punt_return continuam vindo de extract_category_stats.py (cumulativo,
-sem semana) até que se encontre outra fonte. O mesmo vale para
-interceptions (mantido como estava, decisão original de
-extract_defense_stats.py) e para as colunas de detalhamento que a página
-de líderes tinha e a de Logs não tem: completion_pct, first_downs,
-first_down_pct, pass/rush/reception_20_yards_plus, pass/rush_40_yards_plus,
-long_gain de passing, targets de receiving, e o detalhamento de field
-goal por faixa de distância (fg_made_1_19 ... fg_att_60_plus). Essas
-colunas ficam em branco/zero nas linhas migradas — não há de onde tirá-
-las semana a semana, só no acumulado da temporada.
-
-FUMBLES: a página de Logs traz um único par FUM/LOST por linha, sem
-distinguir se o fumble aconteceu numa corrida ou numa recepção (ao
-contrário da página de líderes, que tinha rush_fum e rec_fum separados).
-Por isso: quando a linha tem bloco de recepção, o FUM/LOST vai para
-receiving.fumbles; senão, vai para rushing.fumbles. É uma aproximação
-documentada, não um dado perdido — o total (usado por build_fumbles) bate
-de qualquer forma, só a atribuição rushing-vs-receiving quando o jogador
-tem os dois tipos de produção na mesma semana é uma estimativa.
+A página não tem nenhuma coluna de kickoff/punt return — nem para um
+retornador titular de verdade. O par FUM/LOST de rushing/receiving também
+vem como um único valor por semana, sem distinguir se o fumble aconteceu
+numa corrida ou numa recepção: quando a linha tem produção de recepção
+naquela semana, o par vai para receiving.fumbles; senão, para
+rushing.fumbles.
 
 Entrada: o CSV gerado por extract_players_roster.py.
 
 Saídas (em --output-dir):
-    games_<ano>.csv          — mesmo formato de sempre
-    extra_points_<ano>.csv   — uma linha por semana (rodada 1)
-    defense_<ano>.csv        — uma linha por semana, tackles (rodada 1)
-    passing_<ano>.csv        — NOVO: uma linha por semana
-    rushing_<ano>.csv        — NOVO: uma linha por semana
-    receiving_<ano>.csv      — NOVO: uma linha por semana
-    kicking_fg_ko_<ano>.csv  — NOVO: field goals + kickoffs, uma linha por semana
-    punting_<ano>.csv        — NOVO: uma linha por semana
-    player_game_logs_raw_<ano>.csv — bônus, todas as colunas cruas, sem mapear
+    games_<ano>.csv
+    extra_points_<ano>.csv
+    defense_<ano>.csv        — tackles, interceptions, fumbles forçados/recuperados
+    passing_<ano>.csv
+    rushing_<ano>.csv
+    receiving_<ano>.csv
+    kicking_fg_ko_<ano>.csv  — field goals + kickoffs
+    punting_<ano>.csv
+    player_game_logs_raw_<ano>.csv — todas as colunas cruas, sem mapear
 
 Uso:
     python extract_player_game_logs.py --roster players_roster.csv --year 2026 \
@@ -88,18 +60,17 @@ USER_AGENT = (
 DEFENSIVE_POSITIONS = {
     "DB", "FS", "CB", "S", "SAF", "SS", "LB", "DE", "OLB", "MLB", "ILB", "DT", "NT", "DL",
 }
-# Posições que podem gerar qualquer uma das 9 tabelas de estatística
-# individual (exceto kick_return/punt_return — ver limitação no docstring).
-# Deliberadamente fora: linha ofensiva (OL/T/G/C) — o roster já reflete o
-# elenco atual, então isso não muda nada aqui.
+# Posições que geram alguma das tabelas de estatística individual desta
+# extração. Deliberadamente fora: linha ofensiva (OL/T/G/C) — não produz
+# nenhuma das tabelas alvo.
 OFFENSE_SKILL_POSITIONS = {"RB", "FB", "WR", "TE"}
 
 RESULT_RE = re.compile(r"^([WLT])\s+(\d+)\s*-\s*(\d+)$")
 
 
 def normalize_header(text: str) -> str:
-    """Mesma normalização de extract_category_stats.py — usada só na
-    captura genérica (raw), pra não depender de nome de coluna exato."""
+    """Normalização usada só na captura genérica (raw), pra não depender
+    de nome de coluna exato."""
     text = text.strip().lower()
     text = text.replace("%", "pct").replace("+", "plus").replace("/", "_per_")
     text = re.sub(r"[^a-z0-9]+", "_", text)
@@ -107,10 +78,8 @@ def normalize_header(text: str) -> str:
 
 
 def load_target_players(roster_csv: Path) -> list[dict]:
-    """QB + RB/FB/WR/TE + K + P + posições defensivas — essencialmente
-    todo mundo que pode gerar uma das 9 tabelas de estatística individual
-    (exceto kick_return/punt_return, que a página de Logs não expõe pra
-    ninguém — ver docstring do módulo)."""
+    """QB + RB/FB/WR/TE + K + P + posições defensivas — todo mundo que
+    pode gerar alguma das tabelas de estatística individual."""
     players = []
     with open(roster_csv, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -127,10 +96,10 @@ def load_target_players(roster_csv: Path) -> list[dict]:
 
 
 def find_regular_season_table(soup: BeautifulSoup):
-    """Mesmo cuidado dos scripts anteriores: buscar o cabeçalho exato
-    'Regular Season' (maiúsculas) em tag de heading (h1-h4), não em texto
-    solto — o seletor de temporada no topo da página usa 'Regular season'
-    minúsculo e apareceria antes numa busca case-insensitive."""
+    """Busca o cabeçalho exato 'Regular Season' (maiúsculas) em tag de
+    heading (h1-h4), não em texto solto — o seletor de temporada no topo
+    da página usa 'Regular season' minúsculo e apareceria antes numa
+    busca case-insensitive."""
     heading = None
     for tag in soup.find_all(re.compile(r"^h[1-4]$")):
         if tag.get_text(strip=True) == "Regular Season":
@@ -182,7 +151,7 @@ def locate_blocks(header_raw: list[str], header_lower: list[str]) -> dict:
     aparecem no dict — não é erro, é o jogador não ter aquele tipo de
     produção na página dele.
 
-    Confirmado contra páginas reais (ver docstring do módulo):
+    Blocos reconhecidos:
       passing   (9 cols, QB): Comp, Att, Yds, Avg, TD, Int, Sck, SckY, Rate
       rushing_qb  (4 cols, dentro da página de QB, sem Lng): Att, Yds, Avg, TD
       rushing_full(5 cols, RB/WR/TE/FB): Att, Yds, Avg, Lng, TD
@@ -260,8 +229,8 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
         return result
 
     header_th = table.find("thead").find_all("th") if table.find("thead") else []
-    header_raw = [th.get_text(strip=True) for th in header_th]       # case original, p/ colunas já verificadas (WK/OPP/RESULT/XP/defense)
-    header_lower = [h.lower() for h in header_raw]                    # p/ blocos novos, comparação tolerante a caixa
+    header_raw = [th.get_text(strip=True) for th in header_th]       # case original, p/ colunas de nome fixo (WK/OPP/RESULT/XP/defense)
+    header_lower = [h.lower() for h in header_raw]                    # p/ blocos localizados por posição relativa
     header_norm = [normalize_header(h) for h in header_raw]           # p/ captura genérica (raw)
 
     try:
@@ -273,23 +242,26 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
     idx_opp = header_lower.index("opp") if "opp" in header_lower else None
     idx_result = header_lower.index("result") if "result" in header_lower else None
 
-    # colunas de Extra Point — já validado em produção (rodada 1): leitura
-    # por posição relativa ao cabeçalho exato "XP Att" (há outra coluna
-    # "Blk" no início da tabela, de field goal bloqueado — não é esta).
+    # colunas de Extra Point — lidas por posição relativa ao cabeçalho
+    # exato "XP Att" (há outra coluna "Blk" no início da tabela, de field
+    # goal bloqueado — não é esta).
     idx_xp_att = header_raw.index("XP Att") if "XP Att" in header_raw else None
     idx_xpm = idx_xp_att + 1 if idx_xp_att is not None else None
     idx_xp_blk = idx_xp_att + 3 if idx_xp_att is not None else None
 
-    # colunas de Defense — já validado em produção (rodada 1).
+    # colunas de Defense: tackles, interceptions (com jardas/retorno mais
+    # longo/touchdown de retorno) e fumbles forçados/recuperados, todas no
+    # mesmo bloco de cabeçalho fixo.
     defense_col_map = {
         "combined_tackles": "Total", "solo_tackles": "Solo", "assisted_tackles": "AST",
         "sacks": "SCK", "safeties": "SFTY", "pass_defended": "PDEF",
+        "interceptions": "INT", "interception_yards": "YDS", "interception_long": "LNG",
+        "interception_touchdowns": "TDS", "fumbles_forced": "FF", "fumbles_recovered": "FR",
     }
     defense_idx = {k: header_raw.index(v) for k, v in defense_col_map.items() if v in header_raw}
     has_defense_cols = len(defense_idx) == len(defense_col_map)
 
-    # blocos novos (rodada 2) — localizados uma vez, por posição relativa,
-    # não por nome isolado (ver locate_blocks).
+    # blocos localizados por posição relativa (ver locate_blocks).
     blocks = locate_blocks(header_raw, header_lower)
 
     body = table.find("tbody") or table
@@ -320,7 +292,7 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
                     "made_points": made_points, "suffered_points": suffered_points,
                 })
 
-        # --- extra points (rodada 1, inalterado) ---
+        # --- extra points ---
         if idx_xp_att is not None and len(cells) > idx_xp_blk:
             att = to_int(cell_at(cells, idx_xp_att))
             made = to_int(cell_at(cells, idx_xpm))
@@ -331,7 +303,7 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
                 "extra_point_pct": pct, "extra_points_blocked": blk,
             })
 
-        # --- defense / tackles (rodada 1, inalterado) ---
+        # --- defense: tackles, interceptions, fumbles forçados/recuperados ---
         if has_defense_cols and len(cells) > max(defense_idx.values()):
             row = dict(base)
             for key, i in defense_idx.items():
@@ -341,10 +313,16 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
             row["assisted_tackles"] = int(row["assisted_tackles"])
             row["safeties"] = int(row["safeties"])
             row["pass_defended"] = int(row["pass_defended"])
+            row["interceptions"] = int(row["interceptions"])
+            row["interception_yards"] = int(row["interception_yards"])
+            row["interception_long"] = int(row["interception_long"])
+            row["interception_touchdowns"] = int(row["interception_touchdowns"])
+            row["fumbles_forced"] = int(row["fumbles_forced"])
+            row["fumbles_recovered"] = int(row["fumbles_recovered"])
             # sacks fica float (pode ser 0.5)
             result["defense"].append(row)
 
-        # --- passing (rodada 2, NOVO) ---
+        # --- passing ---
         if "passing" in blocks and len(cells) > blocks["passing"] + 8:
             i = blocks["passing"]
             comp = to_int(cell_at(cells, i))
@@ -362,7 +340,7 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
                 "completion_pct": round(100 * comp / att, 1) if att > 0 else 0,
             })
 
-        # --- rushing (rodada 2, NOVO — 2 variantes de largura, ver locate_blocks) ---
+        # --- rushing (2 variantes de largura, ver locate_blocks) ---
         rush_idx = blocks.get("rushing_full") if "rushing_full" in blocks else blocks.get("rushing_qb")
         if rush_idx is not None:
             width = 5 if "rushing_full" in blocks else 4
@@ -377,7 +355,7 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
                     row["long_gain"] = to_int(cell_at(cells, rush_idx + 3))
                 result["rushing"].append(row)
 
-        # --- receiving (rodada 2, NOVO) ---
+        # --- receiving ---
         if "receiving" in blocks and len(cells) > blocks["receiving"] + 4:
             i = blocks["receiving"]
             result["receiving"].append({
@@ -388,9 +366,9 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
                 "touchdowns": to_int(cell_at(cells, i + 4)),
             })
 
-        # --- fumbles (rodada 2, NOVO): único par FUM/LOST por linha, sem
-        # distinguir corrida vs recepção (ver docstring do módulo) —
-        # atribuído a receiving quando há bloco de recepção, senão a
+        # --- fumbles cometidos (rushing/receiving): único par FUM/LOST por
+        # linha, sem distinguir corrida vs recepção — atribuído a
+        # receiving quando há bloco de recepção na mesma semana, senão a
         # rushing.
         if "fum_lost" in blocks and len(cells) > blocks["fum_lost"] + 1:
             fum = to_int(cell_at(cells, blocks["fum_lost"]))
@@ -399,7 +377,7 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
             elif result["rushing"] and result["rushing"][-1]["week"] == week:
                 result["rushing"][-1]["fumbles"] = fum
 
-        # --- field goals (rodada 2, NOVO) ---
+        # --- field goals ---
         if "field_goals" in blocks and len(cells) > blocks["field_goals"] + 4:
             i = blocks["field_goals"]
             result["kicking_fg_ko"].append({
@@ -411,7 +389,7 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
                 "field_goal_pct": to_number(cell_at(cells, i + 4)),
             })
 
-        # --- kickoffs (rodada 2, NOVO — mescla na mesma linha de FG se já existir) ---
+        # --- kickoffs (mescla na mesma linha de FG se já existir) ---
         if "kickoffs" in blocks and len(cells) > blocks["kickoffs"] + 4:
             i = blocks["kickoffs"]
             ko_row = {
@@ -426,7 +404,7 @@ def fetch_player_game_log(player_id: str, team_id: str, position: str, year: int
             else:
                 result["kicking_fg_ko"].append({**base, **ko_row})
 
-        # --- punting (rodada 2, NOVO) ---
+        # --- punting ---
         if "punting" in blocks and len(cells) > blocks["punting"] + 14:
             i = blocks["punting"]
             result["punting"].append({
@@ -568,8 +546,8 @@ def main():
         if not collected[key]:
             print(
                 f"[AVISO] Nenhuma linha coletada para '{key}' — confira se locate_blocks() "
-                "ainda reconhece o layout real da página (ver docstring do módulo: "
-                "colunas confirmadas por amostragem, não garantidas para sempre).",
+                "ainda reconhece o layout real da página (colunas confirmadas por "
+                "amostragem, não garantidas para sempre).",
                 file=sys.stderr,
             )
 
@@ -586,7 +564,10 @@ def main():
                           "extra_points_made", "extra_point_pct", "extra_points_blocked"])
     write_csv(collected["defense"], out_dir / f"defense_{args.year}.csv",
               fieldnames=["player_id_team", "season", "week", "combined_tackles",
-                          "solo_tackles", "assisted_tackles", "sacks", "safeties", "pass_defended"])
+                          "solo_tackles", "assisted_tackles", "sacks", "safeties",
+                          "pass_defended", "interceptions", "interception_yards",
+                          "interception_long", "interception_touchdowns",
+                          "fumbles_forced", "fumbles_recovered"])
     write_csv(collected["passing"], out_dir / f"passing_{args.year}.csv",
               fieldnames=["player_id_team", "season", "week", "completions", "attempts",
                           "yards", "yards_per_attempt", "completion_pct", "touchdowns",

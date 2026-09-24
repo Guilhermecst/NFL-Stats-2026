@@ -1,68 +1,64 @@
 """
 transform_stats.py
 
-Fase 3 do pipeline: junta os CSVs gerados pelos scripts de extração
-(roster, categorias de líderes que sobraram, logs por jogador) e produz
-um CSV final por tabela do banco, já com as colunas renomeadas para bater
-com o DDL e prontos para o script de upsert no Supabase.
+Junta os CSVs gerados pelos scripts de extração (roster, downs, logs por
+jogador) e produz um CSV final por tabela do banco, já com as colunas
+renomeadas para bater com o DDL e prontos para o script de upsert no
+Supabase.
 
 Entradas esperadas (ajuste os caminhos via argumentos se necessário):
-    players_roster.csv                       (extract_players_roster.py)
-    logs_dir/games_<ano>.csv                 (extract_player_game_logs.py — semana real)
-    logs_dir/extra_points_<ano>.csv          (idem)
-    logs_dir/defense_<ano>.csv               (idem — tackles/sacks/safeties/PD)
-    logs_dir/passing_<ano>.csv               (idem)
-    logs_dir/rushing_<ano>.csv               (idem)
-    logs_dir/receiving_<ano>.csv             (idem)
-    logs_dir/kicking_fg_ko_<ano>.csv         (idem — field goals + kickoffs)
-    logs_dir/punting_<ano>.csv               (idem)
-    stats_dir/fumbles_<ano>.csv              (extract_category_stats.py — acumulado, sem semana)
-    stats_dir/interceptions_<ano>.csv        (idem)
-    stats_dir/kickoff_returns_<ano>.csv      (idem)
-    stats_dir/punt_returns_<ano>.csv         (idem)
-    stats_dir/downs_<ano>.csv                (extract_category_stats.py — tabela por time, sem `week`)
+    players_roster.csv                (extract_players_roster.py)
+    logs_dir/games_<ano>.csv          (extract_player_game_logs.py)
+    logs_dir/extra_points_<ano>.csv   (idem)
+    logs_dir/defense_<ano>.csv        (idem — tackles, interceptions, fumbles forçados/recuperados)
+    logs_dir/passing_<ano>.csv        (idem)
+    logs_dir/rushing_<ano>.csv        (idem)
+    logs_dir/receiving_<ano>.csv      (idem)
+    logs_dir/kicking_fg_ko_<ano>.csv  (idem — field goals + kickoffs)
+    logs_dir/punting_<ano>.csv        (idem)
+    stats_dir/downs_<ano>.csv         (extract_category_stats.py — por time, sem `week`)
 
-FONTE DE CADA TABELA: games, extra_points, defense (tackles), passing,
-rushing, receiving, kicking (FG+KO+XP) e punting vêm de
-extract_player_game_logs.py, com uma linha por semana real de cada
-jogador. kick_return, punt_return, fumbles (forced/opponent-recovered) e
-interceptions vêm de extract_category_stats.py: essas categorias trazem
-o total acumulado da temporada por jogador (sem coluna de semana própria
-na fonte), pois a página de Logs do nfl.com não expõe essas colunas para
-nenhum jogador — cada linha é carimbada com a última semana realmente
-disputada pelo time do jogador (ver determine_team_weeks()).
+Todas as nove tabelas de estatística individual (passing, rushing,
+receiving, kicking, punting, defense, fumbles — e games/extra_points,
+que alimentam outras) vêm de extract_player_game_logs.py: uma linha por
+semana realmente disputada, direto da fonte, sem precisar inferir nada.
+`downs` é por time/temporada, sem coluna `week`, e continua vindo da
+página de líderes de time (extract_category_stats.py) — sempre foi um
+snapshot da temporada por natureza, não uma limitação.
 
-Cada tabela individual gera exatamente as colunas definidas no schema do
-banco (ver MER) — colunas para as quais o nfl.com não disponibiliza dado
-por semana simplesmente não são geradas.
+GAPS DE COLUNA: a página de Logs tem menos detalhamento do que a extração
+anterior por líderes de categoria tinha, e algumas colunas não têm mais
+fonte real — foram removidas do modelo em vez de ficarem permanentemente
+zeradas ou vazias (ver DROP COLUMN / DROP TABLE em anexo à documentação
+do projeto). Removidas de passing: first_downs, first_down_pct,
+pass_20/40_yards_plus, long_gain. De rushing/receiving: first_downs,
+first_down_pct, os campos *_20/40_yards_plus, targets (receiving) e
+yards_after_catch (receiving). De kicking: o detalhamento de field goal
+por faixa de distância (fg_made_1_19 ... fg_att_60_plus), kickoff_yards,
+kickoff_return_yards_against, touchback_pct, onside_kicks,
+onside_kicks_recovered, kickoffs_out_of_bounds e
+kickoff_return_touchdowns_against. De fumbles:
+opponent_fumble_recovery_touchdowns. punting é a exceção: nenhuma coluna
+foi removida. As tabelas kick_return e punt_return foram removidas do
+banco inteiramente — a página de Logs não tem nenhuma coluna de retorno,
+para nenhum jogador.
 
-GAP DE FONTE: nem a página de líderes nem a de Logs separam estatística
-por time — um jogador negociado no meio da temporada aparece com o total
-(ou a semana) sob o TIME ATUAL, mesmo que parte da produção tenha sido
-pelo time anterior. O `player_id_team` é sempre montado com o time do
-roster mais recente.
+Saídas (em --output-dir): teams_final.csv, players_final.csv,
+passing_final.csv, rushing_final.csv, receiving_final.csv,
+kicking_final.csv, punting_final.csv, defense_final.csv,
+fumbles_final.csv, games_final.csv, downs_final.csv
 
-SEMANA POR TIME, NÃO GLOBAL (relevante para kick_return, punt_return,
-fumbles e interceptions, que seguem cumulativas): como essas categorias
-trazem o total ACUMULADO DA TEMPORADA por jogador, não um valor por
-semana, o script precisa decidir sob qual "semana" gravar esse total.
-Ele faz isso via determine_team_weeks(), que olha, TIME A TIME, qual foi
-a última semana com jogo disputado no CSV de games desta mesma rodada —
-não um único número de semana "global" (a maior de toda a liga). Isso
-importa em execuções fora do dia de cron normal (ex: rodando no meio da
-semana pra validar algo, enquanto só alguns times já jogaram): um
-jogador de um time que ainda não jogou continua sendo gravado sob a
-última semana REAL do próprio time (sobrescrevendo a mesma linha,
-idempotente) até que o jogo dele apareça no log — em vez de criar uma
-linha "semana N" espúria, idêntica à "semana N-1", só porque outro time
-qualquer já jogou a rodada N.
+teams_final.csv: NÃO depende de nenhuma extração (conference/division são
+estáticas), só existe pra alimentar a coluna `conf_div` da tabela `teams`
+(ex: "NFC East") via upsert em load_to_supabase.py — as demais colunas de
+`teams` continuam vindo do seed original, fora deste pipeline.
 
-LIMITAÇÃO DA FONTE — reexecução do zero não reconstrói o histórico
-semana-a-semana de kick_return/punt_return/fumbles/interceptions: essas
-tabelas ainda leem stats_dir/<categoria>_<ano>.csv, cumulativo sem
-histórico por semana. A única forma de recuperar o histórico dessas
-tabelas depois do fato é backup do banco ou os CSVs finais
-(final_<ano>/*.csv) de execuções passadas.
+GAP CONHECIDO / LIMITAÇÃO DA FONTE: a página de Logs não separa
+estatísticas por time — um jogador negociado no meio da temporada aparece
+com a produção da semana sob o TIME ATUAL, mesmo que o jogo tenha sido
+pelo time anterior. Isso é uma limitação do próprio nfl.com, não deste
+script: o `player_id_team` é sempre montado com o time do roster mais
+recente.
 
 Uso:
     python transform_stats.py --year 2026 \
@@ -122,23 +118,11 @@ def load_roster(path: Path) -> pd.DataFrame:
 
 def determine_team_weeks(games_path: Path) -> dict[str, int]:
     """Retorna, POR TIME, a última semana com jogo já disputado no CSV de
-    jogos desta rodada (extract_player_game_logs.py) — não um único número
-    global.
-
-    Por quê: kick_return, punt_return, fumbles e interceptions trazem o
-    TOTAL ACUMULADO DA TEMPORADA de cada jogador, não um valor por semana.
-    Se a execução acontece no meio da semana — nem todos os 32 times já
-    jogaram — usar a MAIOR semana entre TODOS os times faz o script
-    carimbar jogadores de times que ainda não jogaram com o número da
-    semana seguinte, mesmo que o total deles ainda seja o da semana
-    anterior (o jogador simplesmente ainda não jogou). Isso criaria uma
-    linha nova "semana N" idêntica à "semana N-1", uma duplicata falsa no
-    banco.
-
-    Com o mapa por time, um jogador de um time que ainda não jogou a
-    semana mais recente continua sendo gravado sob a última semana real
-    do PRÓPRIO time (sobrescrevendo a mesma linha, idempotente) até que o
-    jogo dele apareça no log — sem criar linha espúria."""
+    jogos desta rodada — não um único número global. Usado só para o
+    aviso de execução parcial em main(): como cada tabela de estatística
+    individual já traz `week` direto da própria fonte (extract_player_
+    game_logs.py), essa informação não alimenta mais nenhum build_*, só
+    o diagnóstico impresso no log."""
     df = pd.read_csv(games_path, dtype=str)
     df["week"] = pd.to_numeric(df["week"], errors="coerce")
     df = df.dropna(subset=["week"])
@@ -147,44 +131,11 @@ def determine_team_weeks(games_path: Path) -> dict[str, int]:
     return df.groupby("team_id")["week"].max().astype(int).to_dict()
 
 
-def attach_player_id_team(df: pd.DataFrame, roster: pd.DataFrame, year: int,
-                           team_weeks: dict[str, int]) -> pd.DataFrame:
-    """Junta um CSV de categoria (só tem player_id) com o roster para
-    obter team_id e montar player_id_team, e carimba cada linha com a
-    semana do PRÓPRIO time do jogador (ver determine_team_weeks)."""
-    # dedup na origem: paginação por cursor pode repetir uma linha quando
-    # vários jogadores empatam no critério de ordenação na borda entre
-    # páginas (extract_category_stats.py) — sem isso, o upsert falha com
-    # "ON CONFLICT DO UPDATE command cannot affect row a second time".
-    before = len(df)
-    df = df.drop_duplicates(subset=["player_id"])
-    if len(df) < before:
-        print(f"  [AVISO] {before - len(df)} linha(s) duplicada(s) removida(s) "
-              f"(provável sobreposição de paginação)", file=sys.stderr)
-
-    lookup = roster[["player_id", "team_id", "player_id_team"]].drop_duplicates("player_id")
-    merged = df.merge(lookup, on="player_id", how="left")
-
-    missing = merged["team_id"].isna().sum()
-    if missing:
-        print(f"  [AVISO] {missing} jogador(es) não encontrados no roster "
-              f"(aposentado/cortado?) — linhas descartadas", file=sys.stderr)
-        merged = merged.dropna(subset=["team_id"])
-
-    merged["season"] = year
-    merged["week"] = merged["team_id"].map(team_weeks)
-    no_week = merged["week"].isna().sum()
-    if no_week:
-        print(f"  [AVISO] {no_week} jogador(es) de time(s) sem nenhum jogo "
-              f"registrado ainda em {list(merged.loc[merged['week'].isna(), 'team_id'].unique())} "
-              f"— linhas descartadas", file=sys.stderr)
-        merged = merged.dropna(subset=["week"])
-    merged["week"] = merged["week"].astype(int)
-    return merged
-
-
 def split_att_made(df: pd.DataFrame, col: str, made_col: str, att_col: str) -> pd.DataFrame:
-    """Converte uma coluna tipo '8/8' (feito/tentado) em duas colunas numéricas."""
+    """Converte uma coluna tipo '8/8' (feito/tentado) em duas colunas
+    numéricas. Não usada por nenhum build_* atualmente — nenhuma fonte
+    em uso hoje traz esse formato. Mantida por se um dia outra fonte com
+    esse mesmo formato precisar dela."""
     parts = df[col].fillna("0/0").str.split("/", expand=True)
     df[made_col] = pd.to_numeric(parts[0], errors="coerce").fillna(0).astype(int)
     df[att_col] = pd.to_numeric(parts[1], errors="coerce").fillna(0).astype(int)
@@ -210,33 +161,32 @@ def to_int(df: pd.DataFrame, cols: list[str]):
 
 
 def build_teams() -> pd.DataFrame:
-    """Tabela `teams`, só a coluna `conf_div` (ex: "NFC East"). Não depende
-    de nenhum CSV de extração — vem de TEAM_CONF_DIV, um mapa estático (a
-    divisão de um time só muda em realinhamentos raros da liga). As demais
-    colunas de `teams` (nome, cidade, logo, etc.) vêm do seed original e
-    não são tocadas por este pipeline; o upsert em load_to_supabase.py
-    atualiza só `conf_div` para cada team_id já existente."""
+    """Tabela `teams`, só a coluna `conf_div` (ex: "NFC East"). Não
+    depende de nenhum CSV de extração — vem de TEAM_CONF_DIV, um mapa
+    estático (a divisão de um time só muda em realinhamentos raros da
+    liga). As demais colunas de `teams` (nome, cidade, logo, etc.)
+    continuam vindo do seed original e não são tocadas por este pipeline;
+    o upsert em load_to_supabase.py atualiza só `conf_div` para cada
+    team_id já existente."""
     rows = [{"team_id": team_id, "conf_div": conf_div} for team_id, conf_div in TEAM_CONF_DIV.items()]
     return pd.DataFrame(rows, columns=["team_id", "conf_div"])
 
 
 def build_players(roster: pd.DataFrame, year: int) -> pd.DataFrame:
-    """Tabela `players`: player_id_team, season e os dados básicos de cada
-    jogador (id, nome, posição, time) vindos do roster."""
     out = roster.rename(columns={"position": "player_position"})[
         ["player_id_team", "player_id", "player_name", "player_position", "team_id"]
     ].copy()
     out["season"] = year
+    out["player_image_url"] = None  # não capturado pelo roster scraper ainda
     return out[["player_id_team", "season", "player_id", "player_name", "player_position",
-                "team_id"]]
+                "team_id", "player_image_url"]]
 
 
 def build_passing(passing_path: Path) -> pd.DataFrame:
-    """Tabela `passing`: lê passing_<ano>.csv (extract_player_game_logs.py,
-    uma linha por semana real) e converte os tipos para bater com o DDL."""
-    cols = ["player_id_team", "season", "week", "yards", "yards_per_attempt", "attempts",
-            "completions", "completion_pct", "touchdowns", "interceptions", "rate",
-            "sacks", "sacks_yards"]
+    """Cada linha já é uma semana real, direto de extract_player_game_
+    logs.py."""
+    cols = ["player_id_team", "season", "week", "yards", "yards_per_attempt", "attempts", "completions",
+            "completion_pct", "touchdowns", "interceptions", "rate", "sacks", "sacks_yards"]
     if not passing_path.exists():
         print(f"  [AVISO] {passing_path} não encontrado — passing ficará vazio", file=sys.stderr)
         return pd.DataFrame(columns=cols)
@@ -249,10 +199,9 @@ def build_passing(passing_path: Path) -> pd.DataFrame:
 
 
 def build_rushing(rushing_path: Path) -> pd.DataFrame:
-    """Tabela `rushing`: lê rushing_<ano>.csv (extract_player_game_logs.py,
-    uma linha por semana real). `fumbles` vem do par FUM/LOST único da
-    página de Logs, atribuído a rushing quando a linha não tem bloco de
-    recepção na mesma semana (ver extract_player_game_logs.py)."""
+    """fumbles vem do par FUM/LOST único da página de Logs (ver docstring
+    de extract_player_game_logs.py: aproximação quando o jogador também
+    tem bloco de recepção na mesma semana)."""
     cols = ["player_id_team", "season", "week", "yards", "attempts", "touchdowns",
             "long_gain", "fumbles"]
     if not rushing_path.exists():
@@ -269,10 +218,7 @@ def build_rushing(rushing_path: Path) -> pd.DataFrame:
 
 
 def build_receiving(receiving_path: Path) -> pd.DataFrame:
-    """Tabela `receiving`: lê receiving_<ano>.csv (extract_player_game_logs.py,
-    uma linha por semana real). `fumbles` vem do par FUM/LOST único da
-    página de Logs, atribuído a receiving quando a linha tem bloco de
-    recepção na mesma semana (ver extract_player_game_logs.py)."""
+    """Mesma aproximação de fumbles de build_rushing."""
     cols = ["player_id_team", "season", "week", "receptions", "yards", "touchdowns",
             "long_gain", "fumbles"]
     if not receiving_path.exists():
@@ -288,79 +234,9 @@ def build_receiving(receiving_path: Path) -> pd.DataFrame:
     return df[cols]
 
 
-def build_kick_return(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
-    """Tabela `kick_return`: lê kickoff_returns_<ano>.csv (extract_category_stats.py,
-    acumulado da temporada) e carimba cada linha com a última semana real
-    do time do jogador (ver attach_player_id_team / determine_team_weeks).
-    A coluna de touchdowns é localizada pelo primeiro nome de origem
-    reconhecido, pois o nome exato pode variar conforme o layout da
-    categoria."""
-    cols = ["player_id_team", "season", "week", "returns", "yards", "average", "touchdowns",
-            "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
-            "fumbles"]
-    path = stats_dir / f"kickoff_returns_{year}.csv"
-    if not path.exists():
-        print(f"  [AVISO] {path} não encontrado (categoria veio vazia nesta execução? "
-              f"ver log de extract_category_stats.py) — kick_return ficará vazio",
-              file=sys.stderr)
-        return pd.DataFrame(columns=cols)
-
-    df = pd.read_csv(path, dtype=str)
-    df = attach_player_id_team(df, roster, year, team_weeks)
-    rename_map = {
-        "avg": "average", "ret": "returns", "yds": "yards",
-        "20plus": "returns_20_yards_plus", "40plus": "returns_40_yards_plus",
-        "lng": "long_gain", "fc": "fair_catches", "fum": "fumbles",
-    }
-    for candidate_td in ("kret_td", "ret_td", "td"):
-        if candidate_td in df.columns:
-            rename_map[candidate_td] = "touchdowns"
-            break
-    df = df.rename(columns=rename_map)
-    to_num(df, ["average"])
-    to_int(df, ["returns", "yards", "touchdowns", "returns_20_yards_plus",
-                "returns_40_yards_plus", "long_gain", "fair_catches", "fumbles"])
-    return df[[c for c in cols if c in df.columns]]
-
-
-def build_punt_return(stats_dir: Path, roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
-    """Tabela `punt_return`: lê punt_returns_<ano>.csv (extract_category_stats.py,
-    acumulado da temporada) e carimba cada linha com a última semana real
-    do time do jogador (ver attach_player_id_team / determine_team_weeks).
-    Mesmo esquema de mapeamento de colunas de build_kick_return: a coluna
-    de touchdowns é localizada pelo primeiro nome de origem reconhecido."""
-    cols = ["player_id_team", "season", "week", "returns", "yards", "average", "touchdowns",
-            "returns_20_yards_plus", "returns_40_yards_plus", "long_gain", "fair_catches",
-            "fumbles"]
-    path = stats_dir / f"punt_returns_{year}.csv"
-    if not path.exists():
-        print(f"  [AVISO] {path} não encontrado (categoria veio vazia nesta execução? "
-              f"ver log de extract_category_stats.py) — punt_return ficará vazio",
-              file=sys.stderr)
-        return pd.DataFrame(columns=cols)
-
-    df = pd.read_csv(path, dtype=str)
-    df = attach_player_id_team(df, roster, year, team_weeks)
-    rename_map = {
-        "avg": "average", "ret": "returns", "yds": "yards",
-        "20plus": "returns_20_yards_plus", "40plus": "returns_40_yards_plus",
-        "lng": "long_gain", "fc": "fair_catches", "fum": "fumbles",
-    }
-    for candidate_td in ("pret_td", "kret_td", "td"):
-        if candidate_td in df.columns:
-            rename_map[candidate_td] = "touchdowns"
-            break
-    df = df.rename(columns=rename_map)
-    to_num(df, ["average"])
-    to_int(df, ["returns", "yards", "touchdowns", "returns_20_yards_plus",
-                "returns_40_yards_plus", "long_gain", "fair_catches", "fumbles"])
-    return df[[c for c in cols if c in df.columns]]
-
-
 def build_punting(punting_path: Path) -> pd.DataFrame:
-    """Tabela `punting`: lê punting_<ano>.csv (extract_player_game_logs.py,
-    uma linha por semana real). A página de Logs de um punter traz todas
-    as colunas da tabela `punting`, sem exceção."""
+    """A página de Logs de um punter tem todas as colunas que a tabela
+    precisa — sem gap nenhum aqui."""
     cols = ["player_id_team", "season", "week", "punts", "yards", "net_yards", "long_gain",
             "average", "net_average", "blocked", "out_of_bounds", "downed",
             "in_20_yards_line", "touchbacks", "fair_catches_against", "returns_against",
@@ -379,15 +255,13 @@ def build_punting(punting_path: Path) -> pd.DataFrame:
 
 
 def build_kicking(kicking_fg_ko_path: Path, extra_points_path: Path) -> pd.DataFrame:
-    """Tabela `kicking`: junta field goals + kickoffs (kicking_fg_ko_<ano>.csv)
-    com extra points (extra_points_<ano>.csv), ambos vindos de
-    extract_player_game_logs.py com uma linha por semana real, pela chave
-    (player_id_team, season, week)."""
+    """Junta field goals + kickoffs com extra points — as duas fontes vêm
+    de extract_player_game_logs.py, unidas por (player_id_team, season,
+    week)."""
     cols = ["player_id_team", "season", "week", "field_goals_made", "field_goal_attempts",
-            "field_goal_pct", "field_goal_long", "field_goals_blocked", "kickoffs",
-            "touchbacks", "kickoff_returns_against", "kickoff_return_avg_against",
-            "extra_point_attempts", "extra_points_made", "extra_point_pct",
-            "extra_points_blocked"]
+            "field_goal_pct", "field_goal_long", "field_goals_blocked",
+            "kickoffs", "touchbacks", "kickoff_returns_against", "kickoff_return_avg_against",
+            "extra_point_attempts", "extra_points_made", "extra_point_pct", "extra_points_blocked"]
 
     if kicking_fg_ko_path.exists():
         merged = pd.read_csv(kicking_fg_ko_path, dtype=str)
@@ -413,9 +287,8 @@ def build_kicking(kicking_fg_ko_path: Path, extra_points_path: Path) -> pd.DataF
                   "extra_points_blocked"]:
             merged[c] = 0
 
-    # o merge "outer" gera NaN nas colunas de um lado quando um kicker só
-    # aparece em uma das duas fontes numa dada semana — corrige os tipos de
-    # novo depois do merge, não só antes.
+    # o merge "outer" introduz NaN quando um kicker só aparece em uma das
+    # duas fontes numa dada semana — corrige depois do merge, não só antes.
     kicking_int_cols = [
         "field_goals_made", "field_goal_attempts", "field_goal_long", "field_goals_blocked",
         "kickoffs", "touchbacks", "kickoff_returns_against",
@@ -437,86 +310,46 @@ def build_kicking(kicking_fg_ko_path: Path, extra_points_path: Path) -> pd.DataF
     return merged[cols]
 
 
-def build_defense(defense_path: Path, stats_dir: Path, roster: pd.DataFrame,
-                   year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
-    """Tabela `defense`: tackles/sacks/safeties/pass_defended vêm de
-    defense_<ano>.csv (extract_player_game_logs.py, uma linha por semana
-    real); interceptions vem de interceptions_<ano>.csv
-    (extract_category_stats.py, acumulado da temporada, carimbado na
-    última semana real do time via team_weeks). As duas fontes são unidas
-    pela chave (player_id_team, season, week)."""
+def build_defense(defense_path: Path) -> pd.DataFrame:
+    """Tackles, interceptions (com jardas/retorno mais longo/touchdown de
+    retorno) e, indiretamente via build_fumbles, fumbles forçados/
+    recuperados vêm todos da mesma linha de extract_player_game_logs.py
+    — uma linha por semana real, sem precisar de roster/team_weeks nem
+    merge com outra fonte."""
+    cols = ["player_id_team", "season", "week", "combined_tackles", "solo_tackles",
+            "assisted_tackles", "sacks", "safeties", "pass_defended", "interceptions",
+            "interception_yards", "interception_long", "interception_touchdowns"]
+    if not defense_path.exists():
+        print(f"  [AVISO] {defense_path} não encontrado — defense ficará vazio", file=sys.stderr)
+        return pd.DataFrame(columns=cols)
+
+    df = pd.read_csv(defense_path, dtype=str)
+    to_int(df, ["season", "week", "combined_tackles", "solo_tackles", "assisted_tackles",
+                "safeties", "pass_defended", "interceptions", "interception_yards",
+                "interception_long", "interception_touchdowns"])
+    to_num(df, ["sacks"])
+    return df[cols]
+
+
+def build_fumbles(defense_path: Path, rushing: pd.DataFrame, receiving: pd.DataFrame) -> pd.DataFrame:
+    """forced_fumbles e opponent_fumbles_recovered vêm do mesmo CSV de
+    defense (colunas FF/FR de extract_player_game_logs.py) — uma linha
+    por semana real. own_fumbles é a soma dos fumbles cometidos já
+    extraídos para rushing e receiving."""
+    cols = ["player_id_team", "season", "week", "forced_fumbles",
+            "opponent_fumbles_recovered", "own_fumbles"]
+
     if defense_path.exists():
-        defense = pd.read_csv(defense_path, dtype=str)
-        defense["season"] = pd.to_numeric(defense["season"], errors="coerce").astype("Int64")
-        to_int(defense, ["combined_tackles", "solo_tackles", "assisted_tackles",
-                          "safeties", "pass_defended", "week"])
-        to_num(defense, ["sacks"])
+        d = pd.read_csv(defense_path, dtype=str)
+        d = d.rename(columns={"fumbles_forced": "forced_fumbles", "fumbles_recovered": "opponent_fumbles_recovered"})
+        to_int(d, ["season", "week", "forced_fumbles", "opponent_fumbles_recovered"])
+        keep = ["player_id_team", "season", "week", "forced_fumbles", "opponent_fumbles_recovered"]
+        d = d[[c for c in keep if c in d.columns]]
     else:
-        print(f"  [AVISO] {defense_path} não encontrado — colunas de tackle ficarão nulas",
-              file=sys.stderr)
-        defense = pd.DataFrame(columns=["player_id_team", "season", "week"])
-
-    intc_path = stats_dir / f"interceptions_{year}.csv"
-    intc_cols = ["player_id_team", "season", "week", "interceptions", "interception_touchdowns",
-                 "interception_yards", "interception_long"]
-    if intc_path.exists():
-        intc = pd.read_csv(intc_path, dtype=str)
-        intc = attach_player_id_team(intc, roster, year, team_weeks)
-        intc = intc.rename(columns={
-            "int": "interceptions", "int_td": "interception_touchdowns",
-            "int_yds": "interception_yards", "lng": "interception_long",
-        })
-        to_int(intc, ["interceptions", "interception_touchdowns", "interception_yards",
-                      "interception_long"])
-        intc = intc[intc_cols]
-    else:
-        print(f"  [AVISO] {intc_path} não encontrado (categoria veio vazia nesta execução? "
-              f"ver log de extract_category_stats.py) — colunas de interception ficarão zeradas",
-              file=sys.stderr)
-        intc = pd.DataFrame(columns=intc_cols)
-
-    merged = defense.merge(intc, on=["player_id_team", "season", "week"], how="outer")
-
-    # o merge "outer" introduz NaN nas colunas de um lado quando o jogador só
-    # existe no outro (ex: tem tackle mas nunca interceptou) — precisa
-    # limpar os tipos de novo DEPOIS do merge, não só antes.
-    int_cols = ["combined_tackles", "solo_tackles", "assisted_tackles", "safeties",
-                "pass_defended", "interceptions", "interception_touchdowns",
-                "interception_yards", "interception_long"]
-    for c in int_cols:
-        if c in merged.columns:
-            merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0).astype(int)
-    if "sacks" in merged.columns:
-        merged["sacks"] = pd.to_numeric(merged["sacks"], errors="coerce").fillna(0)
-
-    return merged
-
-
-def build_fumbles(stats_dir: Path, rushing: pd.DataFrame, receiving: pd.DataFrame,
-                   roster: pd.DataFrame, year: int, team_weeks: dict[str, int]) -> pd.DataFrame:
-    """Tabela `fumbles`: forced_fumbles/opponent_fumbles_recovered/
-    opponent_fumble_recovery_touchdowns vêm de fumbles_<ano>.csv
-    (extract_category_stats.py, acumulado da temporada, carimbado na
-    última semana real do time via team_weeks); own_fumbles é a soma dos
-    fumbles já computados em rushing e receiving na mesma semana."""
-    fumbles_path = stats_dir / f"fumbles_{year}.csv"
-    df_cols = ["player_id_team", "season", "week", "forced_fumbles", "opponent_fumbles_recovered",
-               "opponent_fumble_recovery_touchdowns"]
-    if fumbles_path.exists():
-        df = pd.read_csv(fumbles_path, dtype=str)
-        df = attach_player_id_team(df, roster, year, team_weeks)
-        df = df.rename(columns={
-            "ff": "forced_fumbles", "fr": "opponent_fumbles_recovered",
-            "fr_td": "opponent_fumble_recovery_touchdowns",
-        })
-        to_num(df, ["forced_fumbles", "opponent_fumbles_recovered",
-                    "opponent_fumble_recovery_touchdowns"])
-        df = df[df_cols]
-    else:
-        print(f"  [AVISO] {fumbles_path} não encontrado (categoria veio vazia nesta execução? "
-              f"ver log de extract_category_stats.py) — forced_fumbles/opponent_* ficarão zerados",
-              file=sys.stderr)
-        df = pd.DataFrame(columns=df_cols)
+        print(f"  [AVISO] {defense_path} não encontrado — forced_fumbles/"
+              f"opponent_fumbles_recovered ficarão zerados", file=sys.stderr)
+        d = pd.DataFrame(columns=["player_id_team", "season", "week",
+                                   "forced_fumbles", "opponent_fumbles_recovered"])
 
     own = rushing[["player_id_team", "season", "week", "fumbles"]].rename(columns={"fumbles": "rush_fum"})
     own = own.merge(
@@ -528,16 +361,13 @@ def build_fumbles(stats_dir: Path, rushing: pd.DataFrame, receiving: pd.DataFram
     own["own_fumbles"] = own["rush_fum"] + own["rec_fum"]
     own = own[["player_id_team", "season", "week", "own_fumbles"]]
 
-    merged = df.merge(own, on=["player_id_team", "season", "week"], how="outer")
-    for c in ["forced_fumbles", "opponent_fumbles_recovered",
-              "opponent_fumble_recovery_touchdowns", "own_fumbles"]:
+    merged = d.merge(own, on=["player_id_team", "season", "week"], how="outer")
+    for c in ["forced_fumbles", "opponent_fumbles_recovered", "own_fumbles"]:
         merged[c] = merged[c].fillna(0).astype(int)
-    return merged
+    return merged[cols]
 
 
 def build_downs(stats_dir: Path, year: int) -> pd.DataFrame:
-    """Tabela `downs`: lê downs_<ano>.csv (extract_category_stats.py, uma
-    linha por time, temporada inteira, sem coluna de semana)."""
     path = stats_dir / f"downs_{year}.csv"
     if not path.exists():
         print(f"  [AVISO] {path} não encontrado — downs não será carregado", file=sys.stderr)
@@ -555,9 +385,6 @@ def build_downs(stats_dir: Path, year: int) -> pd.DataFrame:
 
 
 def build_games(games_path: Path) -> pd.DataFrame:
-    """Tabela `games`: lê games_<ano>.csv (extract_player_game_logs.py) e
-    resolve o apelido do adversário (coluna `opponent`) para o team_id
-    correspondente via NICKNAME_TO_TEAM_ID."""
     df = pd.read_csv(games_path, dtype=str)
     df["opponent_id"] = df["opponent"].map(NICKNAME_TO_TEAM_ID)
 
@@ -575,8 +402,7 @@ def main():
     parser.add_argument("--year", type=int, required=True)
     parser.add_argument("--roster", required=True)
     parser.add_argument("--stats-dir", required=True,
-                         help="saída de extract_category_stats.py (fumbles/interceptions/"
-                              "kickoff-returns/punt-returns/downs)")
+                         help="saída de extract_category_stats.py (só downs)")
     parser.add_argument("--logs-dir", required=True,
                          help="saída de extract_player_game_logs.py (games/extra_points/"
                               "defense/passing/rushing/receiving/kicking_fg_ko/punting)")
@@ -614,56 +440,42 @@ def main():
     print("Carregando roster...")
     roster = load_roster(Path(args.roster))
 
-    # team_weeks é necessário pras categorias que continuam cumulativas
-    # (fumbles/interceptions/kickoff-returns/punt-returns) — ver docstring
-    # do módulo.
     team_weeks = determine_team_weeks(games_path)
     weeks_found = sorted(set(team_weeks.values()))
     if len(weeks_found) > 1:
         behind = sorted(t for t, w in team_weeks.items() if w < weeks_found[-1])
         print(f"[AVISO] Execução parcial: {len(behind)} time(s) ainda na semana "
               f"{weeks_found[0]} enquanto outros já estão na semana {weeks_found[-1]}: "
-              f"{behind}. Cada jogador será carimbado com a semana real do PRÓPRIO "
-              f"time (ver determine_team_weeks) — não com a maior semana da liga.",
-              file=sys.stderr)
+              f"{behind}.", file=sys.stderr)
     else:
         print(f"Semana atual detectada (todos os times): {weeks_found[0]}")
 
     print("Construindo players...")
     build_players(roster, args.year).to_csv(out_dir / "players_final.csv", index=False)
 
-    print("Construindo passing (fonte: Logs, semana real)...")
+    print("Construindo passing...")
     build_passing(passing_path).to_csv(out_dir / "passing_final.csv", index=False)
 
-    print("Construindo rushing (fonte: Logs, semana real)...")
+    print("Construindo rushing...")
     rushing = build_rushing(rushing_path)
     rushing.to_csv(out_dir / "rushing_final.csv", index=False)
 
-    print("Construindo receiving (fonte: Logs, semana real)...")
+    print("Construindo receiving...")
     receiving = build_receiving(receiving_path)
     receiving.to_csv(out_dir / "receiving_final.csv", index=False)
 
-    print("Construindo kick_return (fonte: categoria, cumulativo)...")
-    build_kick_return(stats_dir, roster, args.year, team_weeks).to_csv(
-        out_dir / "kick_return_final.csv", index=False)
-
-    print("Construindo punt_return (fonte: categoria, cumulativo)...")
-    build_punt_return(stats_dir, roster, args.year, team_weeks).to_csv(
-        out_dir / "punt_return_final.csv", index=False)
-
-    print("Construindo punting (fonte: Logs, semana real)...")
+    print("Construindo punting...")
     build_punting(punting_path).to_csv(out_dir / "punting_final.csv", index=False)
 
-    print("Construindo kicking (FG+KO+XP, fonte: Logs, semana real)...")
+    print("Construindo kicking (FG+KO+XP)...")
     build_kicking(kicking_fg_ko_path, extra_points_path).to_csv(
         out_dir / "kicking_final.csv", index=False)
 
-    print("Construindo defense (tackles: Logs semana real / interceptions: categoria)...")
-    build_defense(defense_logs_path, stats_dir, roster, args.year, team_weeks).to_csv(
-        out_dir / "defense_final.csv", index=False)
+    print("Construindo defense (tackles + interceptions)...")
+    build_defense(defense_logs_path).to_csv(out_dir / "defense_final.csv", index=False)
 
-    print("Construindo fumbles (defensivo: categoria / próprio: rushing+receiving)...")
-    build_fumbles(stats_dir, rushing, receiving, roster, args.year, team_weeks).to_csv(
+    print("Construindo fumbles (forçados/recuperados + próprio)...")
+    build_fumbles(defense_logs_path, rushing, receiving).to_csv(
         out_dir / "fumbles_final.csv", index=False)
 
     print("Construindo games...")

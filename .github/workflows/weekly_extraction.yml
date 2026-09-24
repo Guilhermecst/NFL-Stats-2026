@@ -34,7 +34,7 @@ jobs:
         working-directory: sources
         run: python extract_players_roster.py --output players_roster.csv
 
-      - name: 2. Extrair categorias de líderes restantes (fumbles/interceptions/returns/downs — cumulativo, ver seção 10)
+      - name: 2. Extrair downs (por time, temporada inteira)
         working-directory: sources
         run: python extract_category_stats.py --year ${{ env.SEASON_YEAR }} --output-dir stats_${{ env.SEASON_YEAR }}
 

@@ -1,60 +1,12 @@
 """
 extract_category_stats.py
 
-Fase 2a da extração: obtém as estatísticas ACUMULADAS DA TEMPORADA das
-categorias que ainda não têm outra fonte, via as páginas de "líderes por
-categoria" do nfl.com
-(https://www.nfl.com/stats/player-stats/category/<categoria>/<ano>/reg/all/<ordenacao>/desc).
+Extrai a tabela `downs` (por TIME, temporada inteira, sem paginação — 32
+linhas), via nfl.com/stats/team-stats/offense/downs/<ano>/reg/all. É uma
+tabela por temporada, sem coluna `week`: o acumulado da página é o dado
+certo por design, não uma limitação a contornar.
 
-Cada categoria já retorna TODOS os jogadores com estatística naquela
-categoria na temporada (não só os líderes) — a página pagina via cursor
-opaco (parâmetro `aftercursor`), seguido através do link "Next Page".
-
-ESCOPO REDUZIDO (rodada 2 da migração "extração acumulada" — ver seção 10
-da documentação): passing, rushing, receiving, field-goals, kickoffs e
-punts SAÍRAM deste script — migraram para extract_player_game_logs.py,
-que lê a página de Logs por jogador (semana a semana de verdade, não
-acumulado). Restam aqui só as categorias sem alternativa:
-  - fumbles / interceptions: a página de Logs traz um único par FUM/LOST
-    por linha, sem distinguir corrida de recepção, e não separa
-    interceptions do resto do bloco defensivo do jeito que esta categoria
-    separa — mantidos aqui por decisão original (ver
-    extract_defense_stats.py / extract_player_game_logs.py).
-  - kickoff-returns / punt-returns: a página de Logs NÃO TEM colunas de
-    retorno em lugar nenhum da tabela — confirmado contra a página real
-    de um retornador titular (Deven Thompkins) antes de decidir isso, não
-    é suposição. Continuam presos ao acumulado sem semana até que se
-    encontre outra fonte.
-
-Categoria "Tackles" fica de fora propositalmente: a página está retornando
-"No Stats Available" no nfl.com (bug atual do site, confirmado em 2025 e
-2026 com diferentes critérios de ordenação). As estatísticas de tackles/
-sacks/safeties/pass-defended vêm do scraper por jogador
-(extract_player_game_logs.py).
-
-Além das categorias de jogador, este script também extrai a tabela
-`downs` (por TIME, temporada inteira, sem paginação — 32 linhas), via
-nfl.com/stats/team-stats/offense/downs/<ano>/reg/all. Essa tabela nunca
-teve extrator próprio (órfã desde o desenho original do banco) — use
---skip-downs para pular essa parte se só quiser as categorias de jogador.
-`downs` nunca teve o problema de semana: é uma tabela por temporada, sem
-coluna `week`, então o acumulado cumulativo é o dado certo por design.
-
-LIMITAÇÃO QUE PERSISTE NAS 4 CATEGORIAS RESTANTES: são um SNAPSHOT AO
-VIVO — sempre retornam o total acumulado da temporada até o momento da
-requisição, sem parâmetro de semana na URL. Se o banco for limpo e o
-pipeline reexecutado do zero, fumbles/interceptions/kickoff-returns/
-punt-returns não recuperam o histórico semana-a-semana já ocorrido — só
-uma linha por jogador com o acumulado atual, carimbada com a última
-semana real do time (via team_weeks em transform_stats.py). A única
-forma de recuperar o histórico dessas 4 categorias depois do fato é
-backup do banco ou os CSVs finais (final_<ano>/*.csv) de execuções
-passadas.
-
-Saída: um CSV por categoria em --output-dir, com colunas =
-[player_id, player_name] + as colunas exibidas na tabela (nomes
-normalizados: minúsculo, espaços/símbolos -> underscore). Mais um
-downs_<ano>.csv com uma linha por time.
+Saída: downs_<ano>.csv, uma linha por time, em --output-dir.
 
 Uso:
     python extract_category_stats.py --year 2026 --output-dir ./stats_2026
@@ -64,9 +16,7 @@ import argparse
 import csv
 import re
 import sys
-import time
 from pathlib import Path
-from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -75,108 +25,6 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
-
-BASE_URL = "https://www.nfl.com/stats/player-stats/category"
-
-# categoria (slug da URL) -> critério de ordenação padrão (necessário na URL,
-# mas não afeta quais jogadores aparecem, só a ordem)
-CATEGORIES = {
-    "fumbles": "defensiveforcedfumble",
-    "interceptions": "defensiveinterceptions",
-    "kickoff-returns": "kickreturnsaverageyards",
-    "punt-returns": "puntreturnsaverageyards",
-    # "tackles" fica de fora: página quebrada no nfl.com no momento
-    #
-    # passing, rushing, receiving, field-goals, kickoffs e punts SAÍRAM
-    # daqui (migradas para extract_player_game_logs.py, que lê a página de
-    # Logs por jogador — semana a semana de verdade). fumbles e
-    # interceptions continuam aqui porque a página de Logs não separa
-    # fumble de corrida vs recepção; kickoff-returns e punt-returns
-    # continuam aqui porque a página de Logs NÃO TEM colunas de retorno em
-    # lugar nenhum — nem para um retornador de verdade (confirmado contra
-    # a página real de um retornador titular antes dessa decisão). Ver
-    # docstring do módulo e de extract_player_game_logs.py.
-}
-
-PLAYER_URL_RE = re.compile(r"/players/([a-z0-9\-]+)/?$")
-
-
-def normalize_header(text: str) -> str:
-    text = text.strip().lower()
-    text = text.replace("%", "pct").replace("+", "plus").replace("/", "_per_")
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    return text.strip("_")
-
-
-def parse_table(html: str):
-    """Extrai (linhas, próxima_url) de uma página de categoria."""
-    soup = BeautifulSoup(html, "html.parser")
-
-    table = None
-    for candidate in soup.find_all("table"):
-        if candidate.find("a", href=PLAYER_URL_RE):
-            table = candidate
-            break
-    if table is None:
-        return [], None
-
-    header_cells = table.find("thead").find_all("th") if table.find("thead") else table.find_all("th")
-    headers = [normalize_header(th.get_text(" ", strip=True)) for th in header_cells]
-    # a 1a coluna é sempre "Player" -> vira player_name / player_id
-    stat_headers = headers[1:]
-
-    rows = []
-    body = table.find("tbody") or table
-    for tr in body.find_all("tr"):
-        cells = tr.find_all("td")
-        if not cells:
-            continue
-        link = cells[0].find("a", href=PLAYER_URL_RE)
-        if link is None:
-            continue
-        m = PLAYER_URL_RE.search(link["href"])
-        player_id = m.group(1)
-        player_name = link.get_text(strip=True)
-
-        row = {"player_id": player_id, "player_name": player_name}
-        for i, header in enumerate(stat_headers, start=1):
-            row[header] = cells[i].get_text(strip=True) if i < len(cells) else ""
-        rows.append(row)
-
-    # link "Next Page"
-    next_url = None
-    next_link = soup.find("a", string=re.compile(r"Next Page", re.I))
-    if next_link and next_link.get("href"):
-        next_url = next_link["href"]
-
-    return rows, next_url
-
-
-def fetch_category(category: str, sort: str, year: int, session: requests.Session,
-                    delay: float, max_pages: int) -> list[dict]:
-    url = f"{BASE_URL}/{category}/{year}/reg/all/{sort}/desc"
-    all_rows = []
-    page_num = 1
-
-    while url and page_num <= max_pages:
-        resp = session.get(url, timeout=20)
-        resp.raise_for_status()
-        rows, next_url = parse_table(resp.text)
-        print(f"  página {page_num}: {len(rows)} linhas")
-        all_rows.extend(rows)
-
-        # o link "Next Page" pode vir como caminho relativo (ex: "/stats/...")
-        url = urljoin(resp.url, next_url) if next_url else None
-        page_num += 1
-        if url:
-            time.sleep(delay)
-
-    if page_num > max_pages:
-        print(f"  [AVISO] atingiu max_pages={max_pages} — pode haver mais dados não coletados",
-              file=sys.stderr)
-
-    return all_rows
-
 
 TEAM_STATS_URL = "https://www.nfl.com/stats/team-stats/offense/downs"
 
@@ -188,9 +36,6 @@ LOGO_CODE_RE = re.compile(r"/clubs/logos/([A-Z]+)")
 
 
 def fetch_team_downs(year: int, session: requests.Session) -> list[dict]:
-    """Tabela `downs` (por time, temporada inteira, sem paginação — só 32
-    times). Fonte: nfl.com/stats/team-stats/offense/downs/<ano>/reg/all,
-    que nunca teve extrator (tabela órfã desde o desenho original)."""
     url = f"{TEAM_STATS_URL}/{year}/reg/all"
     resp = session.get(url, timeout=20)
     resp.raise_for_status()
@@ -241,7 +86,6 @@ def write_csv(rows: list[dict], path: Path):
     if not rows:
         print(f"  [AVISO] nenhuma linha para {path.name}, arquivo não gerado", file=sys.stderr)
         return
-    # união de todas as colunas (algumas linhas podem ter colunas ausentes)
     fieldnames = list(rows[0].keys())
     for row in rows[1:]:
         for k in row.keys():
@@ -258,14 +102,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--year", type=int, required=True)
     parser.add_argument("--output-dir", default="./stats_output")
-    parser.add_argument("--delay", type=float, default=1.5,
-                         help="segundos de espera entre páginas/categorias")
-    parser.add_argument("--max-pages", type=int, default=100,
-                         help="trava de segurança contra loop infinito de paginação")
-    parser.add_argument("--categories", nargs="*", default=list(CATEGORIES.keys()),
-                         help="subconjunto de categorias a rodar (padrão: todas)")
-    parser.add_argument("--skip-downs", action="store_true",
-                         help="não extrair a tabela downs (por time)")
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -274,41 +110,19 @@ def main():
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
 
-    empty_categories = []
-    for category in args.categories:
-        if category not in CATEGORIES:
-            print(f"[AVISO] categoria desconhecida: {category}", file=sys.stderr)
-            continue
-        sort = CATEGORIES[category]
-        print(f"Extraindo categoria: {category} (ano={args.year})...")
-        rows = fetch_category(category, sort, args.year, session, args.delay, args.max_pages)
-        out_path = out_dir / f"{category.replace('-', '_')}_{args.year}.csv"
-        write_csv(rows, out_path)
-        print(f"  -> {len(rows)} jogadores salvos em {out_path}")
-        if not rows:
-            empty_categories.append(category)
-        time.sleep(args.delay)
+    print(f"Extraindo downs (por time, ano={args.year})...")
+    downs_rows = fetch_team_downs(args.year, session)
+    downs_path = out_dir / f"downs_{args.year}.csv"
+    write_csv(downs_rows, downs_path)
+    print(f"  -> {len(downs_rows)} times salvos em {downs_path}")
 
-    if not args.skip_downs:
-        print(f"Extraindo downs (por time, ano={args.year})...")
-        downs_rows = fetch_team_downs(args.year, session)
-        downs_path = out_dir / f"downs_{args.year}.csv"
-        write_csv(downs_rows, downs_path)
-        print(f"  -> {len(downs_rows)} times salvos em {downs_path}")
-        if not downs_rows:
-            empty_categories.append("downs")
-
-    if empty_categories:
+    if not downs_rows:
         print(
-            f"\n[AVISO] {len(empty_categories)} categoria(s) vieram com ZERO linhas nesta "
-            f"execução: {empty_categories}. O CSV correspondente NÃO foi gravado — "
-            "transform_stats.py trata isso como \"arquivo ausente\" e zera as colunas "
-            "daquela categoria (não quebra mais o pipeline), mas os dados dessa "
-            "categoria ficam faltando no banco até a próxima execução em que ela voltar "
-            "a responder. Se for sempre a mesma categoria falhando, é provavelmente o "
-            "mesmo tipo de bug já documentado pra 'Tackles' (página retornando "
-            "'No Stats Available' no nfl.com) — vale conferir a URL da categoria "
-            "manualmente no navegador.",
+            "\n[AVISO] downs veio com ZERO linhas nesta execução. O CSV não foi "
+            "gravado — transform_stats.py trata isso como \"arquivo ausente\" e não "
+            "quebra o pipeline, mas downs fica sem atualização até a próxima execução "
+            "em que a página voltar a responder. Vale conferir a URL manualmente no "
+            "navegador se isso persistir.",
             file=sys.stderr,
         )
 
